@@ -44,6 +44,20 @@
 # so the failure is loud. A live cycle already present means re-arm attaches - do
 # not start a second watcher.
 #
+# Only ONE plain arm invocation per home ever commits to that indefinite attach:
+# it claims state/.watch-arm-track.lock (fm_lock_try_acquire, the same primitive
+# as the watcher singleton) before following anything. A concurrent plain-mode
+# call that loses that claim never joins a second indefinite follow chain - it
+# confirms the same live-watcher-holds-the-lock postcondition within the normal
+# confirmation window and reports attached (or the same typed FAILED line) right
+# away. Without this, a redundant re-arm while a healthy cycle is already tracked
+# has no way to ever learn the eventual wake reason (only the process that forked
+# or first attached the cycle sees it), so it can only ever attach forever or
+# time out - exactly the 2026-07-21 incident where 14 orphaned arm processes
+# accumulated over ~90 minutes, none holding the real lock, none reporting until
+# killed. --restart is unaffected: it is a deliberate, explicit repair action,
+# not the routine re-arm this guards against.
+#
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
 # arm/watcher identities, timestamps, exit/signal classification, beacon age,
@@ -67,6 +81,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
+# Claimed by the one plain-mode arm invocation per home that commits to
+# indefinitely following the watcher cycle (started or attached). See the
+# header comment above.
+ARM_TRACK_LOCK="$STATE/.watch-arm-track.lock"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
@@ -427,6 +445,29 @@ if [ "$mode" = restart ]; then
         exit 1
       fi
     fi
+  fi
+fi
+
+# Claim sole ownership of following this home's watcher cycle before doing
+# anything else in plain arm mode. A caller that loses this claim is a
+# redundant concurrent re-arm: some other live arm process already owns
+# notifying on the eventual wake (and is the only one that ever can, since a
+# cycle it did not fork or first attach can never surface that process's own
+# wake reason to us). Piling on a second indefinite follower here is exactly
+# what leaked 14 orphaned processes in the 2026-07-21 incident, so a losing
+# caller confirms the same postcondition - a live watcher currently holds the
+# real lock - within the ordinary confirmation window and exits, instead of
+# joining an unbounded attach loop nobody is waiting on.
+if [ "$mode" = arm ]; then
+  if fm_lock_try_acquire "$ARM_TRACK_LOCK"; then
+    trap 'fm_lock_release "$ARM_TRACK_LOCK"' EXIT
+  else
+    if wait_for_healthy_successor; then
+      report_attached
+      exit 0
+    fi
+    echo "watcher: FAILED - no live watcher with a fresh beacon"
+    exit 1
   fi
 fi
 

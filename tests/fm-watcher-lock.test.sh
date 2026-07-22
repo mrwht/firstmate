@@ -601,6 +601,57 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
 }
 
+test_redundant_arm_exits_promptly_instead_of_leaking() {
+  # 2026-07-21 incident regression: a second, redundant plain-mode arm call
+  # against a home whose cycle is already tracked by a live first arm process
+  # must confirm attachment and exit in bounded time. Before the
+  # state/.watch-arm-track.lock dedup guard, this second call fell into
+  # attach_and_wait forever (it can never learn the eventual wake reason for a
+  # cycle it did not fork or first attach), which is exactly how 14 orphaned
+  # bash bin/fm-watch-arm.sh processes accumulated over ~90 minutes, none
+  # holding the real watcher lock, none reporting until killed.
+  local dir state fakebin out1 out2 armpid1 armpid2 wpid i status
+  dir=$(make_case arm-redundant-rearm)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out1="$dir/arm1.out"
+  out2="$dir/arm2.out"
+  mark_pr_check_migration_complete "$state"
+
+  # First arm call: starts the watcher and becomes its long-lived tracker.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$out1" &
+  armpid1=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF 'watcher: started pid=' "$out1" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF 'watcher: started pid=' "$out1" || fail "first arm did not start a watcher"
+  wpid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ -n "$wpid" ] || fail "first arm did not record a watcher lock pid"
+
+  # Second, redundant arm call while the first is still tracking a healthy
+  # watcher: must confirm attachment and exit PROMPTLY instead of joining a
+  # second indefinite follower.
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_ARM_ATTACH_POLL=0.1 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$out2" &
+  armpid2=$!
+  wait_for_exit "$armpid2" 80
+  status=$?
+  [ "$status" -eq 0 ] || fail "redundant arm did not exit promptly and cleanly (status $status): $(cat "$out2")"
+  grep -qF "watcher: attached pid=$wpid" "$out2" || fail "redundant arm did not report attaching to the tracked watcher: $(cat "$out2")"
+  ! grep -qF 'watcher: started' "$out2" || fail "redundant arm started a second watcher"
+
+  # The first arm remains the sole live tracker, and the watcher is undisturbed.
+  is_live_non_zombie "$armpid1" || fail "first arm exited unexpectedly"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "redundant arm disturbed the tracked watcher's lock"
+
+  kill "$wpid" "$armpid1" 2>/dev/null || true
+  wait "$armpid1" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  pass "a redundant concurrent arm call confirms attachment and exits promptly instead of leaking an indefinite follower"
+}
+
 test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   local dir state fakebin out armout i wpid armpid status
   dir=$(make_case attached-arm-signal-ledger)
@@ -1119,6 +1170,7 @@ test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
 test_arm_self_eviction_is_loud_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
+test_redundant_arm_exits_promptly_instead_of_leaking
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output

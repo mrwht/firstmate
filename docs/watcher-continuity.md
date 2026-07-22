@@ -64,6 +64,10 @@ Before releasing its singleton lock after printing an actionable reason, the wat
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after its durable wake was handled and acknowledged, while an unrelated queue producer or a recycled PID cannot satisfy the match.
 Only a cycle with no matching delivery record emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
 
+Only one plain arm invocation per home ever commits to that indefinite follow.
+It claims `state/.watch-arm-track.lock` first; a concurrent plain-mode call that loses the claim confirms the live-watcher postcondition within the ordinary confirmation window and exits instead of stacking a second indefinite follower on the same cycle.
+`bin/fm-watch-arm.sh`'s own header comment is the authoritative contract for this safeguard; `--restart` is an explicit repair action and does not participate in it.
+
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
