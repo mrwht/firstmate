@@ -39,6 +39,14 @@
 # waste capacity, and --all-landed switches back to the complete global newest-first
 # order.
 #
+# The no-mistakes benefit stats (nm_status plus nm_* fields and nm_top_repos)
+# come from a bounded, timed-out-safe `no-mistakes stats` call, always attempted
+# (no opt-in flag) since they are cheap and local. Parsing that command's fixed-
+# format terminal output is the ONLY owner of the exact field regexes; a missing
+# binary, a timeout, or an unrecognized output shape degrades to nm_status
+# reporting the reason with every nm_* field null and nm_top_repos empty - it
+# never blocks or fails the rest of the snapshot.
+#
 # Flags:
 #   (default)        compact projection, TOON, local-only
 #   --json           the same projected model as JSON (machine/debug; parity form)
@@ -65,6 +73,8 @@ FLEET="$SCRIPT_DIR/fm-fleet-snapshot.sh"
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 # Bounds (overridable for tests / large fleets).
+FM_BEARINGS_NM_TIMEOUT=${FM_BEARINGS_NM_TIMEOUT:-15}
+case "$FM_BEARINGS_NM_TIMEOUT" in ''|*[!0-9]*|0) FM_BEARINGS_NM_TIMEOUT=15 ;; esac
 FM_BEARINGS_LANDED=${FM_BEARINGS_LANDED:-6}
 FM_BEARINGS_LANDED_PER_HOME=${FM_BEARINGS_LANDED_PER_HOME:-$FM_BEARINGS_LANDED}
 FM_BEARINGS_IN_FLIGHT=${FM_BEARINGS_IN_FLIGHT:-20}
@@ -105,7 +115,10 @@ usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--fields <list>]
 Compact bearings projection over fm-fleet-snapshot.sh. TOON by default.
 Default is LOCAL-ONLY (no network); --include-prs is the only path that fetches.
 
-Default fields: schema, home, generated, prs, in_flight{id,kind,state,doing},
+Default fields: schema, home, generated, prs, nm_status, nm_total_changes,
+  nm_total_repos, nm_rescued_changes, nm_rescue_rate_pct, nm_mistakes_reported,
+  nm_mistakes_fixed_pct, nm_fixes_review, nm_fixes_test, nm_fixes_document,
+  nm_top_repos{repo,rescue,fixes}, in_flight{id,kind,state,doing},
   secondmates{id,state,doing,provenance,freshness,age_seconds,contradiction,reason},
   decisions_open{id,key,verb,summary,owner}, landed{id,what,artifact,owner},
   gates{id,title,blocked_by,reason,owner}, reports{id,path}, recorded_prs{id,url},
@@ -270,11 +283,63 @@ EOF
   fi
 fi
 
+# --- no-mistakes pipeline benefit stats (bounded, always attempted) --------
+# Timed/bounded call so a wedged daemon can never hang bearings; a fixed-format
+# terminal report, not a stable API, so parse failure degrades rather than errors.
+nm_bounded() {  # <args...>
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$FM_BEARINGS_NM_TIMEOUT" no-mistakes "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$FM_BEARINGS_NM_TIMEOUT" no-mistakes "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$FM_BEARINGS_NM_TIMEOUT" no-mistakes "$@"
+  else
+    return 124
+  fi
+}
+
+NM_STATUS='unavailable (no-mistakes not found)'
+NM_TC=""; NM_TR=""; NM_RC=""; NM_RR=""; NM_MR=""; NM_MF=""; NM_FR=""; NM_FT=""; NM_FD=""
+NM_TOP_REPOS='[]'
+if command -v no-mistakes >/dev/null 2>&1; then
+  NM_RAW=$(nm_bounded stats 2>/dev/null)
+  NM_CALL_RC=$?
+  if [ "$NM_CALL_RC" -eq 124 ]; then
+    NM_STATUS='unavailable (timed out)'
+  elif [ "$NM_CALL_RC" -ne 0 ] || [ -z "$NM_RAW" ]; then
+    NM_STATUS='unavailable (no-mistakes stats failed)'
+  else
+    NM_TC=$(printf '%s' "$NM_RAW" | grep -aoE 'Total changes[[:space:]]+[0-9]+[[:space:]]+across[[:space:]]+[0-9]+ repos' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_TR=$(printf '%s' "$NM_RAW" | grep -aoE 'Total changes[[:space:]]+[0-9]+[[:space:]]+across[[:space:]]+[0-9]+ repos' | grep -aoE '[0-9]+' | sed -n '2p')
+    NM_RC=$(printf '%s' "$NM_RAW" | grep -aoE 'Rescued changes[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_RR=$(printf '%s' "$NM_RAW" | grep -aoE 'Rescue rate[[:space:]]+[0-9]+%' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_MR=$(printf '%s' "$NM_RAW" | grep -aoE 'Reported[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_MF=$(printf '%s' "$NM_RAW" | grep -aoE 'Fixed[[:space:]]+[0-9]+%' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_FR=$(printf '%s' "$NM_RAW" | grep -aoE 'review[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_FT=$(printf '%s' "$NM_RAW" | grep -aoE 'test[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_FD=$(printf '%s' "$NM_RAW" | grep -aoE 'document[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    if [ -n "$NM_TC" ] && [ -n "$NM_TR" ] && [ -n "$NM_RC" ] && [ -n "$NM_RR" ] && [ -n "$NM_MR" ] && [ -n "$NM_MF" ]; then
+      NM_STATUS='available'
+      NM_TOP_LINES=$(printf '%s' "$NM_RAW" | grep -aoE '[A-Za-z0-9_.-]+[[:space:]]+[0-9]+ rescue[[:space:]]+[0-9]+ fixes' | awk '{print $1"\t"$2"\t"$4}')
+      NM_TOP_REPOS=$(printf '%s\n' "$NM_TOP_LINES" | jq -R -s '
+        [ split("\n")[] | select(length > 0) | split("\t") | {repo:.[0], rescue:(.[1]|tonumber), fixes:(.[2]|tonumber)} ]') \
+        || NM_TOP_REPOS='[]'
+    else
+      NM_STATUS='unavailable (unexpected stats format)'
+      NM_TC=""; NM_TR=""; NM_RC=""; NM_RR=""; NM_MR=""; NM_MF=""; NM_FR=""; NM_FT=""; NM_FD=""
+    fi
+  fi
+fi
+
 # --- projection: canonical snapshot -> fm-bearings.v1 model (JSON) ----------
 MODEL=$(printf '%s' "$SNAP" | jq \
   --arg home "$HOME_LABEL" \
   --arg now "$NOW" \
   --arg prs "$PR_STATUS" \
+  --arg nm_status "$NM_STATUS" \
+  --arg nm_tc "$NM_TC" --arg nm_tr "$NM_TR" --arg nm_rc "$NM_RC" --arg nm_rr "$NM_RR" \
+  --arg nm_mr "$NM_MR" --arg nm_mf "$NM_MF" --arg nm_fr "$NM_FR" --arg nm_ft "$NM_FT" --arg nm_fd "$NM_FD" \
+  --argjson nm_top_repos "$NM_TOP_REPOS" \
   --arg fields "$FIELDS" \
   --argjson landed_n "$FM_BEARINGS_LANDED" \
   --argjson landed_per_home_n "$FM_BEARINGS_LANDED_PER_HOME" \
@@ -299,6 +364,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
   --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
   --argjson candidate_prs "$CANDIDATE_PRS" '
+  def n_or_null($s): if $s == "" then null else ($s | tonumber) end;
   def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   def round_robin_landed($n):
@@ -423,6 +489,17 @@ MODEL=$(printf '%s' "$SNAP" | jq \
       home: $home,
       generated: $now,
       prs: $prs,
+      nm_status: $nm_status,
+      nm_total_changes: n_or_null($nm_tc),
+      nm_total_repos: n_or_null($nm_tr),
+      nm_rescued_changes: n_or_null($nm_rc),
+      nm_rescue_rate_pct: n_or_null($nm_rr),
+      nm_mistakes_reported: n_or_null($nm_mr),
+      nm_mistakes_fixed_pct: n_or_null($nm_mf),
+      nm_fixes_review: n_or_null($nm_fr),
+      nm_fixes_test: n_or_null($nm_ft),
+      nm_fixes_document: n_or_null($nm_fd),
+      nm_top_repos: $nm_top_repos,
       in_flight: (if $all_in_flight == 1 then $in_flight_all else $in_flight_all[:$in_flight_n] end),
       secondmates: (if $all_secondmates == 1 then $secondmates_all else $secondmates_all[:$secondmates_n] end),
       decisions_open: (if $all_decisions == 1 then $decisions_all else $decisions_all[:$decisions_n] end),

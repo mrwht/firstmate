@@ -478,7 +478,7 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   write_parent_secondmate_event "$home" timedout "$timedout" "old timed work"
 
   fakebin=$(make_fakebin "$home")
-  json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 run "$home" "$fakebin" --json)
+  json=$(FAKE_NM_SLEEP=1 FM_SNAPSHOT_SECONDMATE_TIMEOUT=1 FM_BEARINGS_NM_TIMEOUT=1 run "$home" "$fakebin" --json)
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
@@ -899,6 +899,87 @@ test_default_is_bounded_and_local_only() {
   # Valid JSON, correct schema.
   printf '%s' "$json" | jq -e '.schema == "fm-bearings.v1"' >/dev/null || fail "json schema wrong"
   pass "default output is bounded, local-only, and marks omitted surfaces"
+}
+
+test_nomistakes_stats_parsed_when_available() {
+  local home fakebin json
+  home=$(make_home nmstats); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+[ "${FAKE_NM_SLEEP:-0}" = 1 ] && sleep 30
+if [ "${1:-}" = "stats" ]; then
+  cat <<'OUT'
+│   Total changes       72   across 15 repos                │
+│   Rescued changes     23   mistake caught + fixed         │
+│   Rescue rate        32%   ██████████░░░░░░░░░░░░░░░░░░░░ │
+│   Reported            84   ██████████████████████████████ │
+│   Fixed              61%   ██████████████████░░░░░░░░░░░░ │
+│   review              44   ██████████████████████████████ │
+│   test                 6   ████░░░░░░░░░░░░░░░░░░░░░░░░░░ │
+│   document             1   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
+│   distractions         9 rescue    24 fixes   ██████████  │
+│   chef                 8 rescue    19 fixes   ████████░░  │
+│   kanban                5 rescue     6 fixes   ███░░░░░░░  │
+OUT
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/no-mistakes"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .nm_status == "available"
+      and .nm_total_changes == 72
+      and .nm_total_repos == 15
+      and .nm_rescued_changes == 23
+      and .nm_rescue_rate_pct == 32
+      and .nm_mistakes_reported == 84
+      and .nm_mistakes_fixed_pct == 61
+      and .nm_fixes_review == 44
+      and .nm_fixes_test == 6
+      and .nm_fixes_document == 1
+      and (.nm_top_repos | length) == 3
+      and (.nm_top_repos[0] == {repo:"distractions", rescue:9, fixes:24})' >/dev/null \
+    || fail "no-mistakes stats not parsed correctly: $json"
+  pass "no-mistakes pipeline benefit stats are parsed into the snapshot"
+}
+
+test_nomistakes_stats_degrades_when_unavailable() {
+  local home fakebin json
+  home=$(make_home nmmissing); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  # Simulate an errored/absent no-mistakes: a fakebin entry earlier on PATH
+  # that always fails, rather than deleting the file (a real no-mistakes may
+  # still be present later on the test runner's own PATH).
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fakebin/no-mistakes"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.nm_status | contains("unavailable"))
+      and .nm_total_changes == null
+      and .nm_top_repos == []' >/dev/null \
+    || fail "missing no-mistakes must degrade gracefully, not block the snapshot: $json"
+  printf '%s' "$json" | jq -e '.schema == "fm-bearings.v1"' >/dev/null \
+    || fail "rest of the snapshot must still be produced when no-mistakes errors"
+  pass "an errored no-mistakes stats call degrades the stats field without blocking the snapshot"
+}
+
+test_nomistakes_stats_times_out_bounded() {
+  local home fakebin json start end elapsed
+  home=$(make_home nmtimeout); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  start=$(date +%s)
+  json=$(FAKE_NM_SLEEP=1 FM_BEARINGS_NM_TIMEOUT=1 run "$home" "$fakebin" --json)
+  end=$(date +%s)
+  elapsed=$((end - start))
+  [ "$elapsed" -lt 10 ] || fail "no-mistakes stats call must be bounded by the timeout, took ${elapsed}s"
+  printf '%s' "$json" | jq -e '.nm_status | contains("unavailable")' >/dev/null \
+    || fail "timed-out no-mistakes stats must report unavailable"
+  pass "a stalled no-mistakes stats call stays bounded by the timeout"
 }
 
 test_toon_json_parity() {
@@ -1908,6 +1989,9 @@ test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
+test_nomistakes_stats_parsed_when_available
+test_nomistakes_stats_degrades_when_unavailable
+test_nomistakes_stats_times_out_bounded
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
 test_landed_default_balances_dominant_and_sparse_homes
