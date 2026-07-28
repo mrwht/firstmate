@@ -1,7 +1,7 @@
 # Network API (bin/fm-api-server.mjs)
 
 `bin/fm-api-server.mjs` is the single owner of the request/response contract, auth model, and bind-safety guard; this page is the operator-facing summary of setup and current behavior.
-It serves exactly one firstmate home over HTTP, so a remote client - the kanban board's server, running on separate hardware such as a homelab Pi - can read the fleet snapshot and drive the same six mutations a local crewmate would, without shelling out to `bin/*.sh` on this machine directly.
+It serves exactly one firstmate home over HTTP, so a remote client - the kanban board's server, running on separate hardware such as a homelab Pi - can read the fleet snapshot and drive the same five mutations a local crewmate would, without shelling out to `bin/*.sh` on this machine directly.
 `bin/fm-api-server.sh` manages the process (start/stop/status/foreground); it owns no part of the contract itself.
 
 This reverses a deliberate local-only, no-auth design that predated it: a remote caller now needs a bearer token and a private-range bind address, where before there was no network surface at all.
