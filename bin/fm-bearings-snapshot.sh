@@ -315,9 +315,9 @@ if command -v no-mistakes >/dev/null 2>&1; then
     NM_RR=$(printf '%s' "$NM_RAW" | grep -aoE 'Rescue rate[[:space:]]+[0-9]+%' | grep -aoE '[0-9]+' | sed -n '1p')
     NM_MR=$(printf '%s' "$NM_RAW" | grep -aoE 'Reported[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
     NM_MF=$(printf '%s' "$NM_RAW" | grep -aoE 'Fixed[[:space:]]+[0-9]+%' | grep -aoE '[0-9]+' | sed -n '1p')
-    NM_FR=$(printf '%s' "$NM_RAW" | grep -aoE 'review[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
-    NM_FT=$(printf '%s' "$NM_RAW" | grep -aoE 'test[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
-    NM_FD=$(printf '%s' "$NM_RAW" | grep -aoE 'document[[:space:]]+[0-9]+' | grep -aoE '[0-9]+' | sed -n '1p')
+    NM_FR=$(printf '%s' "$NM_RAW" | grep -aoE '(^|[^A-Za-z])review[[:space:]]+[0-9]+' | grep -aoE '[0-9]+$' | sed -n '1p')
+    NM_FT=$(printf '%s' "$NM_RAW" | grep -aoE '(^|[^A-Za-z])test[[:space:]]+[0-9]+' | grep -aoE '[0-9]+$' | sed -n '1p')
+    NM_FD=$(printf '%s' "$NM_RAW" | grep -aoE '(^|[^A-Za-z])document[[:space:]]+[0-9]+' | grep -aoE '[0-9]+$' | sed -n '1p')
     if [ -n "$NM_TC" ] && [ -n "$NM_TR" ] && [ -n "$NM_RC" ] && [ -n "$NM_RR" ] && [ -n "$NM_MR" ] && [ -n "$NM_MF" ]; then
       NM_STATUS='available'
       NM_TOP_LINES=$(printf '%s' "$NM_RAW" | grep -aoE '[A-Za-z0-9_.-]+[[:space:]]+[0-9]+ rescue[[:space:]]+[0-9]+ fixes' | awk '{print $1"\t"$2"\t"$4}')
