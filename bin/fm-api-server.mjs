@@ -231,7 +231,8 @@ export function isSlug(v) {
     typeof v === "string" &&
     SLUG_RE.test(v) &&
     v !== "." &&
-    v !== ".."
+    v !== ".." &&
+    !v.startsWith("-")
   );
 }
 
@@ -241,7 +242,8 @@ export function isSafePathLike(v) {
     v.length > 0 &&
     v.length <= 4096 &&
     !/[\0\r\n]/.test(v) &&
-    !v.split("/").includes("..")
+    !v.split("/").includes("..") &&
+    !v.startsWith("-")
   );
 }
 

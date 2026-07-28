@@ -239,6 +239,22 @@ test_slug_fields_reject_dot_segments() {
   pass "fm-api-server: taskId/originId/decisionKey/routedTo slug fields reject the literal '..' segment"
 }
 
+test_slug_and_path_fields_reject_leading_dash() {
+  http_req POST /v1/promote "$TOKEN" '{"taskId":"--help"}'
+  expect_code 400 "$LAST_CODE" "promote taskId leading dash"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"--foo","decisionKey":"k","decision":"x","routedTo":["a"]}'
+  expect_code 400 "$LAST_CODE" "decision-hold originId leading dash"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"a","decisionKey":"--foo","decision":"x","routedTo":["a"]}'
+  expect_code 400 "$LAST_CODE" "decision-hold decisionKey leading dash"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"a","decisionKey":"k","decision":"x","routedTo":["--foo"]}'
+  expect_code 400 "$LAST_CODE" "decision-hold routedTo leading dash"
+  http_req POST /v1/spawn "$TOKEN" '{"taskId":"a","projectDir":"--verbose"}'
+  expect_code 400 "$LAST_CODE" "spawn projectDir leading dash"
+  http_req POST /v1/spawn "$TOKEN" '{"taskId":"a","projectDir":"foo","model":"--bar"}'
+  expect_code 400 "$LAST_CODE" "spawn model leading dash"
+  pass "fm-api-server: taskId/originId/decisionKey/routedTo/projectDir/model fields reject a leading '-'"
+}
+
 test_healthz_requires_no_auth
 test_auth_required_on_protected_route
 test_snapshot_returns_real_schema
@@ -250,6 +266,7 @@ test_pr_merge_validation_and_pass_through
 test_decision_hold_validation_and_pass_through
 test_spawn_rejects_unverified_harness_and_raw_command
 test_slug_fields_reject_dot_segments
+test_slug_and_path_fields_reject_leading_dash
 
 stop_server
 
