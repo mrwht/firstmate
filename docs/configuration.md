@@ -504,6 +504,12 @@ The published `lavish-axi poll` clears feedback destructively before returning i
 Never describe this path as at-least-once, no-loss, or lossless.
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
 
+## Network API (config/api-token / config/api-host / config/api-port / config/api-bind-override)
+
+`bin/fm-api-server.mjs`, launched through `bin/fm-api-server.sh`, is an optional network-facing HTTP API for one firstmate home - see [`docs/api-server.md`](api-server.md) for setup and [the script's own header comment](../bin/fm-api-server.mjs) for the exact route and auth contract, the single owner of both.
+It is off until `config/api-token` is created (`bin/fm-api-server.sh init-token`); all four config files are LOCAL and gitignored under `$FM_HOME/config`, matching every other per-home config item in "Operational home layout and state" above.
+`config/api-host` (default `127.0.0.1`) and `config/api-port` (default `8787`) choose the bind address; the server refuses to start on a non-loopback, non-private-range host unless `config/api-bind-override` (presence-only) is also present.
+
 ## Environment variables
 
 Runtime tuning via environment variables (defaults shown):
