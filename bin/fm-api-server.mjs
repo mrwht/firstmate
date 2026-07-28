@@ -227,7 +227,12 @@ function checkAuth(req, token) {
 // --- validation helpers ---------------------------------------------------
 
 export function isSlug(v) {
-  return typeof v === "string" && SLUG_RE.test(v);
+  return (
+    typeof v === "string" &&
+    SLUG_RE.test(v) &&
+    v !== "." &&
+    v !== ".."
+  );
 }
 
 export function isSafePathLike(v) {

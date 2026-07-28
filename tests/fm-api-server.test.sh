@@ -222,7 +222,21 @@ test_spawn_rejects_unverified_harness_and_raw_command() {
   expect_code 400 "$LAST_CODE" "spawn path traversal"
   http_req POST /v1/spawn "$TOKEN" '{"taskId":"a"}'
   expect_code 400 "$LAST_CODE" "spawn missing projectDir"
+  http_req POST /v1/spawn "$TOKEN" '{"taskId":"..","projectDir":"foo"}'
+  expect_code 400 "$LAST_CODE" "spawn taskId dot-dot"
   pass "fm-api-server: /v1/spawn never lets a raw launch command, unverified harness, bad effort, or path traversal through"
+}
+
+test_slug_fields_reject_dot_segments() {
+  http_req POST /v1/promote "$TOKEN" '{"taskId":".."}'
+  expect_code 400 "$LAST_CODE" "promote taskId dot-dot"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"..","decisionKey":"k","decision":"x","routedTo":["a"]}'
+  expect_code 400 "$LAST_CODE" "decision-hold originId dot-dot"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"a","decisionKey":"..","decision":"x","routedTo":["a"]}'
+  expect_code 400 "$LAST_CODE" "decision-hold decisionKey dot-dot"
+  http_req POST /v1/decision-hold/resolve "$TOKEN" '{"originId":"a","decisionKey":"k","decision":"x","routedTo":[".."]}'
+  expect_code 400 "$LAST_CODE" "decision-hold routedTo dot-dot"
+  pass "fm-api-server: taskId/originId/decisionKey/routedTo slug fields reject the literal '..' segment"
 }
 
 test_healthz_requires_no_auth
@@ -235,6 +249,7 @@ test_promote_validation_and_pass_through
 test_pr_merge_validation_and_pass_through
 test_decision_hold_validation_and_pass_through
 test_spawn_rejects_unverified_harness_and_raw_command
+test_slug_fields_reject_dot_segments
 
 stop_server
 
