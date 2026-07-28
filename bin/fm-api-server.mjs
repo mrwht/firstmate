@@ -34,8 +34,10 @@
 // explicit operator acknowledgement that lifts this refusal for a host this
 // classifier cannot verify (e.g. a VPN interface it does not recognize, or a
 // deliberate 0.0.0.0); it still prints a loud warning rather than proceeding
-// silently. This is Captain-decided Option B from the kanban-network-api
-// decision: token auth plus an enforced-by-default private-bind guard.
+// silently. Token auth plus an enforced-by-default private-bind guard is the
+// captain-approved posture for a two-machine, single-operator setup: not a
+// multi-tenant auth system, but not an unauthenticated endpoint reachable from
+// the wider LAN either.
 //
 // MUTATION SURFACE: exactly six routes wrap exactly six existing scripts by
 // their own documented flags - never a generic command or path passthrough:
