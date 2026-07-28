@@ -235,6 +235,11 @@ When `config/crew-dispatch.json` exists, crewmate and scout spawns require an ex
 The inherited-local-material contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); its harness-relevant consequence is that a secondmate's own crewmates use the primary's dispatch profiles and static harness value.
 Those inherited values are defaults and rules only; `fm-spawn` still permits a consciously chosen explicit runtime outside the config.
 `config/secondmate-harness` is not inherited because secondmates do not launch secondmates.
+`config/secondmate-harness.<id>` is an optional sibling file, identical grammar (`<harness> [<model>] [<effort>]`), that pins one specific secondmate id ahead of the global file.
+The full fallback chain is `config/secondmate-harness.<id>` -> `config/secondmate-harness` -> `config/crew-harness` -> the primary's own harness; an absent or `default`-only per-id file falls through exactly like an absent or `default` global file, so a fleet with no per-id files is byte-identical to today.
+`<id>` is sanitized against `[A-Za-z0-9_-]+` before being interpolated into a filename; an id that fails that pattern is treated as no per-id override, never traversed or read as an arbitrary path.
+`fm-spawn.sh` resolves the per-id file at every `--secondmate` launch (initial spawn, recovery respawn, and the bootstrap liveness-sweep respawn), so the pin is durable across restarts the same way the global file already is.
+Like `config/secondmate-harness`, the per-id file is not inherited into secondmate homes because secondmates do not launch secondmates.
 For grok, `fm-spawn.sh` installs one firstmate-owned global turn-end hook under `$GROK_HOME/hooks/`, or `~/.grok/hooks/` when `GROK_HOME` is unset, and drops a per-task `.fm-grok-turnend` pointer in the worktree, with teardown removing the task token and pointer.
 For Kimi crews, `fm-spawn.sh` runs `fm-kimi-turnend-hook.sh install`, drops a per-task `.fm-kimi-turnend` pointer in the worktree, and records the matching private registry token for teardown.
 Kimi continues to use the captain's normal Kimi home, including the existing config, skills, and memory; Firstmate does not create an isolated Kimi home.

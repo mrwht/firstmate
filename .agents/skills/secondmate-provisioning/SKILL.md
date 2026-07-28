@@ -96,6 +96,8 @@ A remote route accepts only a verified harness adapter and refuses a raw launch 
 When the file's tokens do apply, an explicit per-spawn `--model` or `--effort` flag always wins over the file's token for that axis.
 Because this resolves from the file on every spawn, the pin is durable across every respawn (recovery, `/updatefirstmate`, restart) exactly like the harness axis itself - e.g. `config/secondmate-harness` containing `claude opus` keeps a secondmate pinned to Opus even if the primary's own default model later changes.
 This is secondmate-only: crewmate/scout model resolution is untouched by this file.
+An optional sibling file `config/secondmate-harness.<id>` pins one specific secondmate id ahead of the global file, same grammar and same fallback philosophy - `docs/configuration.md` "Harness support" owns the full fallback-chain contract.
+The primary looks it up at every `--secondmate` launch for that id; it is never copied into the secondmate's own home, exactly like the existing global file.
 
 This section is the single owner of the secondmate sync and inherited-local-material propagation contract; `AGENTS.md` sections 3 and 4 point here.
 Before a local launch, `fm-spawn.sh --secondmate` locally fast-forwards the home to the primary firstmate checkout's current default-branch commit when it is safe; dirty, diverged, or in-flight homes launch unchanged with a warning.
