@@ -42,20 +42,29 @@
 // MUTATION SURFACE: exactly six routes wrap exactly six existing scripts by
 // their own documented flags - never a generic command or path passthrough:
 //   GET  /healthz                     liveness only, no auth, no fleet data
-//   GET  /v1/snapshot                 bin/fm-fleet-snapshot.sh --json
+//   GET  /v1/snapshot                 served from the poll loop's cached snapshot; see below
 //   GET  /v1/stream                   ping-only SSE, no wrapped script; see below
 //   POST /v1/send                     bin/fm-send.sh <target> <text|--key K>
 //   POST /v1/decision-hold/resolve    bin/fm-decision-hold.sh resolve ...
 //   POST /v1/promote                  bin/fm-promote.sh <task-id>
 //   POST /v1/spawn                    bin/fm-spawn.sh <task-id> ...
 //   POST /v1/pr-merge                 bin/fm-pr-merge.sh <task-id> <pr-url>
+// GET /v1/snapshot and GET /v1/stream share one background poll loop (every
+// STREAM_POLL_MS) that runs bin/fm-fleet-snapshot.sh --json: the poll caches
+// the parsed snapshot on streamState.lastSnapshot, which GET /v1/snapshot
+// serves directly with no per-request shell-out, and hashes the raw output
+// to detect change for GET /v1/stream's "changed" event. Responses can lag
+// real fleet state by up to STREAM_POLL_MS - see docs/api-server.md's "Live
+// updates" section. The only shell-out on the snapshot path is the one-time
+// cold-start warm-up on the first request after server start; see the
+// handleSnapshot comment below for that contract.
 // GET /v1/stream is a ping-only Server-Sent Events channel, same bearer-token
 // gate as every other route: it emits "event: changed\ndata: {}\n\n" whenever
-// an internal poll (every STREAM_POLL_MS) detects the snapshot has changed,
-// and a comment-only ": ping\n\n" keep-alive every STREAM_KEEPALIVE_MS. It
-// never pushes the snapshot payload itself - a client that receives "changed"
-// re-fetches GET /v1/snapshot. Concurrent streams are capped at MAX_STREAMS
-// (503 beyond the cap); see docs/api-server.md's "Live updates" section.
+// the poll above detects the snapshot has changed, and a comment-only
+// ": ping\n\n" keep-alive every STREAM_KEEPALIVE_MS. It never pushes the
+// snapshot payload itself - a client that receives "changed" re-fetches
+// GET /v1/snapshot. Concurrent streams are capped at MAX_STREAMS (503 beyond
+// the cap); see docs/api-server.md's "Live updates" section.
 // Every script invocation uses child_process.execFile with an explicit
 // argument array (never a shell string), so request content can never be
 // interpreted as shell syntax regardless of validation. Validation below is
@@ -340,17 +349,27 @@ function runScript(scriptName, args, { timeoutMs = 30000 } = {}) {
 
 // --- route handlers ---------------------------------------------------------
 
-async function handleSnapshot(res) {
-  const result = await runScript("fm-fleet-snapshot.sh", ["--json"], { timeoutMs: 20000 });
-  if (!result.ok) {
-    sendJson(res, 502, { error: "snapshot failed", stderr: result.stderr });
+// GET /v1/snapshot is served from streamState.lastSnapshot (kept warm by
+// pollAndBroadcastChanges on the STREAM_POLL_MS interval below) rather than
+// shelling out per request. The only shell-out on this path is the one-time
+// cold-start warm-up: the first request after server start awaits
+// streamState.warmupPromise, a single in-flight promise shared by every
+// concurrent first request, so a fresh process never serves a placeholder
+// and never runs the warm-up shell-out more than once.
+async function handleSnapshot(res, streamState) {
+  if (streamState.lastSnapshot === null) {
+    if (!streamState.warmupPromise) {
+      streamState.warmupPromise = pollAndBroadcastChanges(streamState).finally(() => {
+        streamState.warmupPromise = null;
+      });
+    }
+    await streamState.warmupPromise;
+  }
+  if (streamState.lastSnapshot === null) {
+    sendJson(res, 502, { error: "snapshot failed" });
     return;
   }
-  try {
-    sendJson(res, 200, JSON.parse(result.stdout));
-  } catch {
-    sendJson(res, 502, { error: "snapshot produced invalid JSON" });
-  }
+  sendJson(res, 200, streamState.lastSnapshot);
 }
 
 function handleStream(res, streamState) {
@@ -371,15 +390,24 @@ function handleStream(res, streamState) {
 // --- SSE broadcast state -----------------------------------------------------
 
 export function createStreamState() {
-  return { streams: new Set(), lastHash: null };
+  return { streams: new Set(), lastHash: null, lastSnapshot: null, warmupPromise: null };
 }
 
+// Also the single writer of streamState.lastSnapshot, the cache handleSnapshot
+// serves from - see the comment above handleSnapshot for the cold-start contract.
 async function pollAndBroadcastChanges(streamState) {
   const result = await runScript("fm-fleet-snapshot.sh", ["--json"], { timeoutMs: 20000 });
   if (!result.ok) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return;
+  }
   const hash = crypto.createHash("sha256").update(result.stdout, "utf8").digest("hex");
   const changed = streamState.lastHash !== null && hash !== streamState.lastHash;
   streamState.lastHash = hash;
+  streamState.lastSnapshot = parsed;
   if (!changed) return;
   for (const res of streamState.streams) res.write("event: changed\ndata: {}\n\n");
 }
@@ -564,7 +592,7 @@ export function createApp(config) {
         }
 
         if (routeKey === "GET /v1/snapshot") {
-          await handleSnapshot(res);
+          await handleSnapshot(res, streamState);
           return;
         }
         if (routeKey === "GET /v1/stream") {

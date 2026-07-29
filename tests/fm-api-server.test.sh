@@ -6,12 +6,13 @@
 # loopback/private without an override), the override path actually lifting
 # the refusal, bearer-token auth, routing (unknown route, wrong method,
 # malformed body), the read-only snapshot endpoint against a real empty
-# sandbox home, and every mutation endpoint's input-validation layer plus its
-# honest 502 pass-through when the wrapped script fails against an empty
-# sandbox (a nonexistent target/task/origin fails fast and side-effect-free in
-# every wrapped script except fm-spawn.sh, so spawn is exercised at the
-# validation layer only here - its own execution is already covered by the
-# dedicated backend test suites).
+# sandbox home, the snapshot cache's warm-hit latency and its cold-start
+# single-flight warm-up contract, and every mutation endpoint's
+# input-validation layer plus its honest 502 pass-through when the wrapped
+# script fails against an empty sandbox (a nonexistent target/task/origin
+# fails fast and side-effect-free in every wrapped script except
+# fm-spawn.sh, so spawn is exercised at the validation layer only here - its
+# own execution is already covered by the dedicated backend test suites).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -180,6 +181,84 @@ test_snapshot_returns_real_schema() {
   expect_code 200 "$LAST_CODE" "snapshot"
   assert_contains "$LAST_BODY" '"schema":"fm-fleet-snapshot.v1"' "snapshot schema field"
   pass "fm-api-server: GET /v1/snapshot returns the real fm-fleet-snapshot.sh --json schema"
+}
+
+test_snapshot_served_from_cache_after_warmup() {
+  # $SANDBOX's server already answered a GET /v1/snapshot above (test order,
+  # not a fresh assumption here), so streamState.lastSnapshot is warm and this
+  # request must be served from it with no per-request shell-out: a bare
+  # JSON.stringify of a cached object, not a subprocess spawn, so it should
+  # complete in well under the time a fresh bin/fm-fleet-snapshot.sh --json
+  # shell-out takes (a bash process plus several jq invocations).
+  local started ended elapsed_ms
+  started=$(date +%s%N)
+  http_req GET /v1/snapshot "$TOKEN"
+  ended=$(date +%s%N)
+  expect_code 200 "$LAST_CODE" "warm snapshot"
+  elapsed_ms=$(( (ended - started) / 1000000 ))
+  [ "$elapsed_ms" -lt 300 ] \
+    || fail "warm GET /v1/snapshot took ${elapsed_ms}ms, expected well under 300ms for a cache hit"
+  pass "fm-api-server: GET /v1/snapshot is served from the warm cache with no per-request shell-out"
+}
+
+test_snapshot_cold_start_single_flight() {
+  # A fresh server has no warm streamState.lastSnapshot yet. The first
+  # request(s) after start must block on the real snapshot (never serve a
+  # placeholder), and concurrent first requests must share exactly one
+  # warm-up shell-out rather than each triggering their own. A large poll
+  # interval keeps the background poll from also firing during the window.
+  local sandbox port
+  sandbox=$(fm_test_tmproot fm-api-server)
+  mkdir -p "$sandbox/config"
+  printf 'cold-token-%s' "$$" > "$sandbox/config/api-token"
+  port=$(( 20000 + (RANDOM % 20000) ))
+  echo "$port" > "$sandbox/config/api-port"
+  env FM_HOME="$sandbox" FM_STREAM_POLL_MS_OVERRIDE=60000 \
+    node "$SERVER_JS" > "$sandbox/cold-server.log" 2>&1 &
+  local pid=$!
+  local ready=0
+  for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://127.0.0.1:$port/healthz" 2>/dev/null && { ready=1; break; }
+    kill -0 "$pid" 2>/dev/null || fail "cold-start server exited before becoming ready; log: $(cat "$sandbox/cold-server.log")"
+    sleep 0.1
+  done
+  [ "$ready" -eq 1 ] || fail "cold-start server never became ready; log: $(cat "$sandbox/cold-server.log")"
+  local token
+  token=$(cat "$sandbox/config/api-token")
+
+  local out1 out2 out3
+  out1=$(mktemp); out2=$(mktemp); out3=$(mktemp)
+  curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot" > "$out1" &
+  local p1=$!
+  curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot" > "$out2" &
+  local p2=$!
+  curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot" > "$out3" &
+  local p3=$!
+
+  # Direct children of the server's own pid, so this only ever counts
+  # subprocesses this test's own server spawned, never another lane's work.
+  local max_seen=0 n
+  for _ in $(seq 1 100); do
+    n=$(pgrep -P "$pid" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" -gt "$max_seen" ] && max_seen=$n
+    kill -0 "$p1" 2>/dev/null || kill -0 "$p2" 2>/dev/null || kill -0 "$p3" 2>/dev/null || break
+    sleep 0.02
+  done
+
+  wait "$p1" "$p2" "$p3" 2>/dev/null
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+
+  local b1 b2 b3
+  b1=$(cat "$out1"); b2=$(cat "$out2"); b3=$(cat "$out3")
+  rm -f "$out1" "$out2" "$out3"
+
+  assert_contains "$b1" '"schema":"fm-fleet-snapshot.v1"' "cold-start request got the real snapshot, not a placeholder"
+  [ "$b1" = "$b2" ] && [ "$b2" = "$b3" ] || fail "concurrent cold-start requests returned different bodies"
+  [ "$max_seen" -le 1 ] \
+    || fail "expected at most 1 concurrent warm-up subprocess during cold start, saw $max_seen"
+
+  pass "fm-api-server: concurrent cold-start GET /v1/snapshot requests await one shared warm-up, never a placeholder"
 }
 
 test_unknown_route_and_wrong_method() {
@@ -353,6 +432,8 @@ test_slug_and_path_fields_reject_leading_dash() {
 test_healthz_requires_no_auth
 test_auth_required_on_protected_route
 test_snapshot_returns_real_schema
+test_snapshot_served_from_cache_after_warmup
+test_snapshot_cold_start_single_flight
 test_unknown_route_and_wrong_method
 test_malformed_json_body_is_400
 test_send_validation_and_pass_through

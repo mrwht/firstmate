@@ -43,6 +43,9 @@ A comment-only `: ping\n\n` line every ~25s keeps idle-timeout network paths (VP
 Concurrent streams are capped at 8; a connection beyond the cap gets `503` instead of a stream.
 This is the captain-confirmed tradeoff for the first cut (simplicity over pushing a full diff payload); revisit only if polling `/v1/snapshot` on every `changed` event proves costly in practice.
 
+`GET /v1/snapshot` is served from the same background poll's cached snapshot rather than shelling out per request, so its response can lag real fleet state by up to the poll interval (currently 3s, the same `STREAM_POLL_MS` this section's poll uses for change detection).
+The only shell-out on the snapshot path is a one-time warm-up on the first request after server start; every request after that is served from cache.
+
 ## Verification
 
 `tests/fm-api-server.test.sh` covers both startup refusals, the override path actually lifting the guard and listening, bearer-token auth, routing (unknown route, wrong method, malformed body), a real `GET /v1/snapshot` against an empty sandbox home, every mutation endpoint's validation layer plus its honest 502 pass-through from the real wrapped script, and `GET /v1/stream`'s auth gate, `changed` event, and connection cap.
