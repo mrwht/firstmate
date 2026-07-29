@@ -247,6 +247,20 @@ The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
 
+## Delivery mode overrides (config/task-mode.<id>)
+
+`config/task-mode.<id>` is an optional local, gitignored, per-task file that overrides a task's resolved no-mistakes delivery mode and yolo flag, mirroring `config/secondmate-harness`'s per-id-then-global fallback shape.
+`<id>` is sanitized against `[A-Za-z0-9_-]+` before being interpolated into a filename, the same approach used for other per-id filenames in this repo; an id containing any other character (for example `/` or `..`) is treated as if no override file exists rather than being interpolated.
+The file holds one line, `<mode> [+yolo]`, using the exact same mode and yolo vocabulary `bin/fm-project-mode.sh` already parses (`no-mistakes`/`direct-PR`/`local-only`, optional `+yolo`).
+An absent file, or a present file whose mode token is empty or `default`, falls through to the project's registry mode via `bin/fm-project-mode.sh` unchanged; an unknown mode token warns to stderr and also falls through, so a typo never silently drops the gate.
+`bin/fm-task-mode.sh <id> <project-name>` is the single resolver: it checks `config/task-mode.<id>` first and calls `bin/fm-project-mode.sh <project-name>` only as the fallback.
+`bin/fm-project-mode.sh` itself is unchanged and stays project-name-only - it has callers with no task in scope at all, so its interface was not widened for this feature.
+Neither `bin/fm-spawn.sh` nor `bin/fm-brief.sh` reads this override itself; both require an explicit `--mode`/`--yolo` at intake (AGENTS.md section 7), so the caller runs `fm-task-mode.sh` first and passes its result through those flags, keeping the generated brief text and the mode recorded in `state/<id>.meta` in agreement for the same task.
+The resolution re-runs at every spawn, so like the harness precedent the override is durable across a respawn as long as the file still exists.
+
+**Authority: explicit-only, never yolo.** This override file may only be created explicitly by the captain or by firstmate acting on an explicit captain instruction - a standing `yolo` posture never creates, implies, or is sufficient authority to create `config/task-mode.<id>`.
+A downgraded mode (for example `local-only` or `direct-PR` on a project whose registry default is `no-mistakes`) skips that task's review, tests, lint, or CI gates while every other task on the same project still gets them, so this is one of the standing captain boundaries `yolo` does not cover (AGENTS.md section 7).
+
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.

@@ -28,8 +28,10 @@
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
-# resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never reads it:
+# resolves it per task at intake (AGENTS.md section 7, bin/fm-task-mode.sh: an
+# explicit config/task-mode.<id> override, falling through to data/projects.md
+# via fm-project-mode.sh; see docs/configuration.md "Delivery mode overrides");
+# this script never reads either file itself:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
@@ -348,9 +350,10 @@ exit 0
 fi
 
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
-# delivery mode, validated above. The generated DOD opens with the fixed
-# "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
-# explicit --mode before launching.
+# delivery mode, validated above (resolved by the caller through
+# bin/fm-task-mode.sh before it ever reaches --mode; see the header comment).
+# The generated DOD opens with the fixed "Delivery contract: mode=<mode>" line
+# that bin/fm-spawn.sh checks against its own explicit --mode before launching.
 case "$MODE" in
   direct-PR)
     SETUP2=""

@@ -2515,10 +2515,15 @@ fi
 
 # Delivery posture recorded in meta so fm-teardown's safety check and the
 # validate/merge stages can branch on it. A ship task carries the explicit
-# per-task decision validated above; a secondmate's posture is fixed; a scout
-# records none at all, because its deliverable is a report rather than a merge
-# (fm-teardown.sh defaults an absent mode to no-mistakes, and fm-promote.sh
-# requires an explicit mode when a scout is promoted to a ship task).
+# per-task decision validated above (the caller resolves it through
+# bin/fm-task-mode.sh, an explicit config/task-mode.<id> override ahead of the
+# project's registry mode via bin/fm-project-mode.sh, before it ever reaches
+# --mode; see docs/configuration.md "Delivery mode overrides"); a secondmate's
+# posture is fixed; a scout records none at all, because its deliverable is a
+# report rather than a merge (fm-teardown.sh defaults an absent mode to
+# no-mistakes, and fm-promote.sh requires an explicit mode when a scout is
+# promoted to a ship task).
+SECONDMATE_PROJECTS=
 if [ "$KIND" = secondmate ]; then
   MODE=secondmate
   YOLO=off
