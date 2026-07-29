@@ -31,10 +31,19 @@ Token and bind config live under `$FM_HOME/config` (LOCAL, gitignored), exactly 
 ## Surface
 
 Read `bin/fm-api-server.mjs`'s own header comment for the exact route list, request/response shapes, and every wrapped script's flag mapping - it is the single source of truth and is not restated here.
-In short: one read-only snapshot route and five mutation routes, each wrapping one existing `bin/fm-*.sh` script by its own documented flags.
+In short: one read-only snapshot route, a ping-only live-update stream (see "Live updates" below), and five mutation routes, each wrapping one existing `bin/fm-*.sh` script by its own documented flags.
 There is no generic command or path passthrough; an unverified harness name or a raw whitespace launch command (`bin/fm-spawn.sh`'s own escape hatch) is rejected before it ever reaches a script.
+
+## Live updates
+
+`GET /v1/stream` is a ping-only Server-Sent Events channel, gated by the exact same bearer token as every other route.
+It never carries the snapshot payload itself: on a fleet-state change it emits `event: changed\ndata: {}\n\n`, and the client re-fetches `GET /v1/snapshot` to get the actual data.
+This keeps `/v1/stream` a thin "wake me up" channel with no second serialization path to drift from `/v1/snapshot`'s own schema.
+A comment-only `: ping\n\n` line every ~25s keeps idle-timeout network paths (VPN, proxies) from silently killing the connection; a client should treat any read timeout as a signal to reconnect and re-fetch the snapshot once, since a missed `changed` event during a drop is otherwise invisible.
+Concurrent streams are capped at 8; a connection beyond the cap gets `503` instead of a stream.
+This is the captain-confirmed tradeoff for the first cut (simplicity over pushing a full diff payload); revisit only if polling `/v1/snapshot` on every `changed` event proves costly in practice.
 
 ## Verification
 
-`tests/fm-api-server.test.sh` covers both startup refusals, the override path actually lifting the guard and listening, bearer-token auth, routing (unknown route, wrong method, malformed body), a real `GET /v1/snapshot` against an empty sandbox home, and every mutation endpoint's validation layer plus its honest 502 pass-through from the real wrapped script.
+`tests/fm-api-server.test.sh` covers both startup refusals, the override path actually lifting the guard and listening, bearer-token auth, routing (unknown route, wrong method, malformed body), a real `GET /v1/snapshot` against an empty sandbox home, every mutation endpoint's validation layer plus its honest 502 pass-through from the real wrapped script, and `GET /v1/stream`'s auth gate, `changed` event, and connection cap.
 `node --check bin/fm-api-server.mjs` verifies syntax; `bin/fm-lint.sh bin/fm-api-server.sh tests/fm-api-server.test.sh` covers the shell side.

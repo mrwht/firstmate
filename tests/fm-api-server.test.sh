@@ -22,10 +22,12 @@ command -v curl >/dev/null 2>&1 || { pass "fm-api-server: curl not available, sk
 
 SERVER_JS="$ROOT/bin/fm-api-server.mjs"
 SERVER_PID=""
+STREAM_SERVER_PID=""
 PORT=$(( 20000 + (RANDOM % 20000) ))
 
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  [ -n "$STREAM_SERVER_PID" ] && kill "$STREAM_SERVER_PID" 2>/dev/null
   fm_test_cleanup
 }
 trap cleanup EXIT
@@ -49,6 +51,27 @@ start_server() {  # <sandbox> [extra env assignment]...
     sleep 0.1
   done
   fail "server never became ready on port $PORT; log: $(cat "$sandbox/server.log")"
+}
+
+start_stream_server() {  # <sandbox> <port>
+  local sandbox=$1 port=$2
+  env FM_HOME="$sandbox" FM_STREAM_POLL_MS_OVERRIDE=200 FM_STREAM_KEEPALIVE_MS_OVERRIDE=60000 \
+    node "$SERVER_JS" > "$sandbox/stream-server.log" 2>&1 &
+  STREAM_SERVER_PID=$!
+  for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://127.0.0.1:$port/healthz" 2>/dev/null && return 0
+    kill -0 "$STREAM_SERVER_PID" 2>/dev/null \
+      || fail "stream server exited before becoming ready; log: $(cat "$sandbox/stream-server.log")"
+    sleep 0.1
+  done
+  fail "stream server never became ready on port $port; log: $(cat "$sandbox/stream-server.log")"
+}
+
+stop_stream_server() {
+  [ -n "${STREAM_SERVER_PID:-}" ] || return 0
+  kill "$STREAM_SERVER_PID" 2>/dev/null || true
+  wait "$STREAM_SERVER_PID" 2>/dev/null || true
+  STREAM_SERVER_PID=""
 }
 
 stop_server() {
@@ -239,6 +262,78 @@ test_slug_fields_reject_dot_segments() {
   pass "fm-api-server: taskId/originId/decisionKey/routedTo slug fields reject the literal '..' segment"
 }
 
+test_stream_requires_auth() {
+  http_req GET /v1/stream
+  expect_code 401 "$LAST_CODE" "stream without auth"
+  http_req GET /v1/stream "wrong-token"
+  expect_code 401 "$LAST_CODE" "stream with wrong token"
+  pass "fm-api-server: GET /v1/stream requires the same bearer auth as every other route"
+}
+
+test_stream_emits_changed_on_snapshot_mutation() {
+  local sandbox port out
+  sandbox=$(fm_test_tmproot fm-api-server)
+  mkdir -p "$sandbox/config"
+  printf 'stream-token-%s' "$$" > "$sandbox/config/api-token"
+  port=$(( 20000 + (RANDOM % 20000) ))
+  echo "$port" > "$sandbox/config/api-port"
+  start_stream_server "$sandbox" "$port"
+  local token
+  token=$(cat "$sandbox/config/api-token")
+
+  local stream_out
+  stream_out=$(mktemp)
+  (
+    curl -s -N --max-time 5 \
+      -H "Authorization: Bearer $token" \
+      "http://127.0.0.1:$port/v1/stream" > "$stream_out"
+  ) &
+  local curl_pid=$!
+
+  sleep 0.5
+  mkdir -p "$sandbox/data"
+  printf '## Queued\n- mutation-%s - test mutation (added 2026-01-01)\n' "$$" > "$sandbox/data/backlog.md"
+
+  wait "$curl_pid" 2>/dev/null
+  out=$(cat "$stream_out")
+  rm -f "$stream_out"
+  stop_stream_server
+
+  assert_contains "$out" "event: changed" "stream emitted a changed event after a snapshot-visible mutation"
+  pass "fm-api-server: GET /v1/stream pushes event: changed after fleet state changes"
+}
+
+test_stream_enforces_connection_cap() {
+  local sandbox port pids code
+  sandbox=$(fm_test_tmproot fm-api-server)
+  mkdir -p "$sandbox/config"
+  printf 'cap-token-%s' "$$" > "$sandbox/config/api-token"
+  port=$(( 20000 + (RANDOM % 20000) ))
+  echo "$port" > "$sandbox/config/api-port"
+  start_stream_server "$sandbox" "$port"
+  local token
+  token=$(cat "$sandbox/config/api-token")
+
+  pids=()
+  for _ in $(seq 1 8); do
+    curl -s -N --max-time 5 -H "Authorization: Bearer $token" \
+      "http://127.0.0.1:$port/v1/stream" > /dev/null &
+    pids+=("$!")
+  done
+  sleep 0.5
+
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+    "http://127.0.0.1:$port/v1/stream")
+
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null
+  done
+  stop_stream_server
+
+  expect_code 503 "$code" "stream beyond the connection cap"
+  pass "fm-api-server: GET /v1/stream enforces its connection cap"
+}
+
 test_slug_and_path_fields_reject_leading_dash() {
   http_req POST /v1/promote "$TOKEN" '{"taskId":"--help"}'
   expect_code 400 "$LAST_CODE" "promote taskId leading dash"
@@ -265,6 +360,9 @@ test_promote_validation_and_pass_through
 test_pr_merge_validation_and_pass_through
 test_decision_hold_validation_and_pass_through
 test_spawn_rejects_unverified_harness_and_raw_command
+test_stream_requires_auth
+test_stream_emits_changed_on_snapshot_mutation
+test_stream_enforces_connection_cap
 test_slug_fields_reject_dot_segments
 test_slug_and_path_fields_reject_leading_dash
 

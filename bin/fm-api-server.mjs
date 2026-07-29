@@ -43,11 +43,19 @@
 // their own documented flags - never a generic command or path passthrough:
 //   GET  /healthz                     liveness only, no auth, no fleet data
 //   GET  /v1/snapshot                 bin/fm-fleet-snapshot.sh --json
+//   GET  /v1/stream                   ping-only SSE, no wrapped script; see below
 //   POST /v1/send                     bin/fm-send.sh <target> <text|--key K>
 //   POST /v1/decision-hold/resolve    bin/fm-decision-hold.sh resolve ...
 //   POST /v1/promote                  bin/fm-promote.sh <task-id>
 //   POST /v1/spawn                    bin/fm-spawn.sh <task-id> ...
 //   POST /v1/pr-merge                 bin/fm-pr-merge.sh <task-id> <pr-url>
+// GET /v1/stream is a ping-only Server-Sent Events channel, same bearer-token
+// gate as every other route: it emits "event: changed\ndata: {}\n\n" whenever
+// an internal poll (every STREAM_POLL_MS) detects the snapshot has changed,
+// and a comment-only ": ping\n\n" keep-alive every STREAM_KEEPALIVE_MS. It
+// never pushes the snapshot payload itself - a client that receives "changed"
+// re-fetches GET /v1/snapshot. Concurrent streams are capped at MAX_STREAMS
+// (503 beyond the cap); see docs/api-server.md's "Live updates" section.
 // Every script invocation uses child_process.execFile with an explicit
 // argument array (never a shell string), so request content can never be
 // interpreted as shell syntax regardless of validation. Validation below is
@@ -68,7 +76,8 @@
 //   api-bind-override presence-only flag lifting the private-bind refusal
 //
 // Env overrides for tests, matching the FM_*_OVERRIDE convention used across
-// bin/*.sh: FM_HOME, FM_CONFIG_OVERRIDE.
+// bin/*.sh: FM_HOME, FM_CONFIG_OVERRIDE, FM_STREAM_POLL_MS_OVERRIDE,
+// FM_STREAM_KEEPALIVE_MS_OVERRIDE.
 //
 // Verify syntax with: node --check bin/fm-api-server.mjs
 
@@ -94,6 +103,11 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
 const MAX_BODY_BYTES = 65536;
 const MAX_STDERR_BYTES = 4096;
+// Overridable only for tests, same FM_*_OVERRIDE convention as FM_CONFIG_OVERRIDE,
+// so the test suite can observe a "changed" broadcast without a multi-second wait.
+const STREAM_POLL_MS = Number(process.env.FM_STREAM_POLL_MS_OVERRIDE) || 3000;
+const STREAM_KEEPALIVE_MS = Number(process.env.FM_STREAM_KEEPALIVE_MS_OVERRIDE) || 25000;
+const MAX_STREAMS = 8;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
 const EFFORT_VALUES = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SEND_KEYS = new Set(["Enter", "Escape", "C-c"]);
@@ -112,6 +126,7 @@ const VERIFIED_HARNESSES = new Set([
 const BACKEND_VALUES = new Set(["tmux", "herdr", "zellij", "orca", "cmux"]);
 const KNOWN_ROUTES = new Set([
   "/v1/snapshot",
+  "/v1/stream",
   "/v1/send",
   "/v1/decision-hold/resolve",
   "/v1/promote",
@@ -338,6 +353,48 @@ async function handleSnapshot(res) {
   }
 }
 
+function handleStream(res, streamState) {
+  if (streamState.streams.size >= MAX_STREAMS) {
+    sendJson(res, 503, { error: `too many open streams (max ${MAX_STREAMS})` });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+  streamState.streams.add(res);
+  res.on("close", () => streamState.streams.delete(res));
+}
+
+// --- SSE broadcast state -----------------------------------------------------
+
+export function createStreamState() {
+  return { streams: new Set(), lastHash: null };
+}
+
+async function pollAndBroadcastChanges(streamState) {
+  const result = await runScript("fm-fleet-snapshot.sh", ["--json"], { timeoutMs: 20000 });
+  if (!result.ok) return;
+  const hash = crypto.createHash("sha256").update(result.stdout, "utf8").digest("hex");
+  const changed = streamState.lastHash !== null && hash !== streamState.lastHash;
+  streamState.lastHash = hash;
+  if (!changed) return;
+  for (const res of streamState.streams) res.write("event: changed\ndata: {}\n\n");
+}
+
+function broadcastKeepalive(streamState) {
+  for (const res of streamState.streams) res.write(": ping\n\n");
+}
+
+export function stopStreaming(streamState) {
+  clearInterval(streamState.pollTimer);
+  clearInterval(streamState.keepaliveTimer);
+  for (const res of streamState.streams) res.end();
+  streamState.streams.clear();
+}
+
 async function handleSend(body, res) {
   const target = body.target;
   if (typeof target !== "string" || target.length === 0 || target.length > 256 || /[\0\r\n]/.test(target)) {
@@ -479,7 +536,17 @@ function logLine(req, res, startedAt) {
 }
 
 export function createApp(config) {
-  return http.createServer((req, res) => {
+  const streamState = createStreamState();
+  streamState.pollTimer = setInterval(() => {
+    void pollAndBroadcastChanges(streamState);
+  }, STREAM_POLL_MS);
+  streamState.pollTimer.unref();
+  streamState.keepaliveTimer = setInterval(() => {
+    broadcastKeepalive(streamState);
+  }, STREAM_KEEPALIVE_MS);
+  streamState.keepaliveTimer.unref();
+
+  const server = http.createServer((req, res) => {
     const startedAt = Date.now();
     void (async () => {
       try {
@@ -498,6 +565,10 @@ export function createApp(config) {
 
         if (routeKey === "GET /v1/snapshot") {
           await handleSnapshot(res);
+          return;
+        }
+        if (routeKey === "GET /v1/stream") {
+          handleStream(res, streamState);
           return;
         }
         if (routeKey === "POST /v1/send") {
@@ -544,6 +615,9 @@ export function createApp(config) {
       }
     })();
   });
+  server.fmStreamState = streamState;
+  server.on("close", () => stopStreaming(streamState));
+  return server;
 }
 
 function main() {
@@ -568,6 +642,7 @@ function main() {
   });
   const shutdown = (signal) => {
     console.log(`fm-api-server received ${signal}, shutting down`);
+    stopStreaming(server.fmStreamState);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();
   };
