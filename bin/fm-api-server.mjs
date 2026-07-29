@@ -358,10 +358,15 @@ function runScript(scriptName, args, { timeoutMs = 30000 } = {}) {
 // and never runs the warm-up shell-out more than once.
 async function handleSnapshot(res, streamState) {
   if (streamState.lastSnapshot === null) {
-    if (!streamState.warmupPromise) {
-      streamState.warmupPromise = pollAndBroadcastChanges(streamState).finally(() => {
-        streamState.warmupPromise = null;
-      });
+    const sinceFailure = Date.now() - streamState.lastWarmupFailureAt;
+    if (!streamState.warmupPromise && sinceFailure >= STREAM_POLL_MS) {
+      streamState.warmupPromise = pollAndBroadcastChanges(streamState)
+        .then(() => {
+          streamState.lastWarmupFailureAt = streamState.lastSnapshot === null ? Date.now() : 0;
+        })
+        .finally(() => {
+          streamState.warmupPromise = null;
+        });
     }
     await streamState.warmupPromise;
   }
@@ -390,7 +395,13 @@ function handleStream(res, streamState) {
 // --- SSE broadcast state -----------------------------------------------------
 
 export function createStreamState() {
-  return { streams: new Set(), lastHash: null, lastSnapshot: null, warmupPromise: null };
+  return {
+    streams: new Set(),
+    lastHash: null,
+    lastSnapshot: null,
+    warmupPromise: null,
+    lastWarmupFailureAt: 0,
+  };
 }
 
 // Also the single writer of streamState.lastSnapshot, the cache handleSnapshot
