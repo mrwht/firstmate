@@ -44,7 +44,8 @@ Concurrent streams are capped at 8; a connection beyond the cap gets `503` inste
 This is the captain-confirmed tradeoff for the first cut (simplicity over pushing a full diff payload); revisit only if polling `/v1/snapshot` on every `changed` event proves costly in practice.
 
 `GET /v1/snapshot` is served from the same background poll's cached snapshot rather than shelling out per request, so its response can lag real fleet state by up to the poll interval (currently 3s, the same `STREAM_POLL_MS` this section's poll uses for change detection).
-The only shell-out on the snapshot path is a one-time warm-up on the first request after server start; every request after that is served from cache.
+The only shell-out on the snapshot path is a warm-up on the first request after server start; every request after that is served from cache.
+If that warm-up fails, a later request retries it, backed off to at most once per poll interval so a sustained failure cannot pile up concurrent shell-outs.
 
 ## Verification
 

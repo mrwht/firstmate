@@ -261,6 +261,78 @@ test_snapshot_cold_start_single_flight() {
   pass "fm-api-server: concurrent cold-start GET /v1/snapshot requests await one shared warm-up, never a placeholder"
 }
 
+test_snapshot_backoff_on_sustained_failure() {
+  # When bin/fm-fleet-snapshot.sh keeps failing, streamState.lastSnapshot
+  # never warms up, so every GET /v1/snapshot would otherwise re-trigger its
+  # own warm-up shell-out (a thundering herd on sustained failure). A broken
+  # jq placed ahead of the real one on PATH makes the wrapped script fail
+  # fast and deterministically, and each real invocation appends a line to
+  # $jq_log, so counting that log's lines tells us whether a request
+  # actually re-ran the script or was served from the in-flight backoff skip.
+  local sandbox port
+  sandbox=$(fm_test_tmproot fm-api-server)
+  mkdir -p "$sandbox/config" "$sandbox/fakebin"
+  printf 'backoff-token-%s' "$$" > "$sandbox/config/api-token"
+  port=$(( 20000 + (RANDOM % 20000) ))
+  echo "$port" > "$sandbox/config/api-port"
+
+  local jq_log="$sandbox/jq-calls.log"
+  : > "$jq_log"
+  cat > "$sandbox/fakebin/jq" <<EOF
+#!/bin/sh
+echo x >> "$jq_log"
+exit 1
+EOF
+  chmod +x "$sandbox/fakebin/jq"
+
+  env FM_HOME="$sandbox" FM_STREAM_POLL_MS_OVERRIDE=800 \
+    PATH="$sandbox/fakebin:$PATH" \
+    node "$SERVER_JS" > "$sandbox/backoff-server.log" 2>&1 &
+  local pid=$!
+  local ready=0
+  for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://127.0.0.1:$port/healthz" 2>/dev/null && { ready=1; break; }
+    kill -0 "$pid" 2>/dev/null || fail "backoff server exited before becoming ready; log: $(cat "$sandbox/backoff-server.log")"
+    sleep 0.1
+  done
+  [ "$ready" -eq 1 ] || fail "backoff server never became ready; log: $(cat "$sandbox/backoff-server.log")"
+  local token
+  token=$(cat "$sandbox/config/api-token")
+
+  local code1
+  code1=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot")
+  local calls_after_first
+  calls_after_first=$(wc -l < "$jq_log" | tr -d ' ')
+  [ "$calls_after_first" -gt 0 ] || fail "expected the broken jq to be invoked by the first failing snapshot warm-up"
+
+  # Immediately re-request, still well inside the 800ms backoff window: must
+  # not spawn another bin/fm-fleet-snapshot.sh warm-up.
+  local code2
+  code2=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot")
+  local calls_after_second
+  calls_after_second=$(wc -l < "$jq_log" | tr -d ' ')
+
+  sleep 0.9
+
+  local code3
+  code3=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://127.0.0.1:$port/v1/snapshot")
+  local calls_after_third
+  calls_after_third=$(wc -l < "$jq_log" | tr -d ' ')
+
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+
+  expect_code 502 "$code1" "sustained-failure snapshot (first)"
+  expect_code 502 "$code2" "sustained-failure snapshot (immediate retry)"
+  expect_code 502 "$code3" "sustained-failure snapshot (after backoff window)"
+  [ "$calls_after_second" -eq "$calls_after_first" ] \
+    || fail "expected no new warm-up during the backoff window, but jq call count went from $calls_after_first to $calls_after_second"
+  [ "$calls_after_third" -gt "$calls_after_second" ] \
+    || fail "expected a fresh warm-up attempt once the backoff window elapsed, but jq call count stayed at $calls_after_second"
+
+  pass "fm-api-server: GET /v1/snapshot backs off repeated warm-up retries during sustained failure, then retries after the poll interval"
+}
+
 test_unknown_route_and_wrong_method() {
   http_req GET /nope "$TOKEN"
   expect_code 404 "$LAST_CODE" "unknown route"
@@ -434,6 +506,7 @@ test_auth_required_on_protected_route
 test_snapshot_returns_real_schema
 test_snapshot_served_from_cache_after_warmup
 test_snapshot_cold_start_single_flight
+test_snapshot_backoff_on_sustained_failure
 test_unknown_route_and_wrong_method
 test_malformed_json_body_is_400
 test_send_validation_and_pass_through
