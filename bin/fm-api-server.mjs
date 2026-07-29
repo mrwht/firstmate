@@ -392,6 +392,15 @@ function handleStream(res, streamState) {
   res.write(": connected\n\n");
   streamState.streams.add(res);
   res.on("close", () => streamState.streams.delete(res));
+  res.on("error", () => streamState.streams.delete(res));
+}
+
+function writeToStream(streamState, res, chunk) {
+  try {
+    res.write(chunk);
+  } catch {
+    streamState.streams.delete(res);
+  }
 }
 
 // --- SSE broadcast state -----------------------------------------------------
@@ -422,11 +431,11 @@ async function pollAndBroadcastChanges(streamState) {
   streamState.lastHash = hash;
   streamState.lastSnapshot = parsed;
   if (!changed) return;
-  for (const res of streamState.streams) res.write("event: changed\ndata: {}\n\n");
+  for (const res of streamState.streams) writeToStream(streamState, res, "event: changed\ndata: {}\n\n");
 }
 
 function broadcastKeepalive(streamState) {
-  for (const res of streamState.streams) res.write(": ping\n\n");
+  for (const res of streamState.streams) writeToStream(streamState, res, ": ping\n\n");
 }
 
 export function stopStreaming(streamState) {
