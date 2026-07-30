@@ -412,26 +412,33 @@ export function createStreamState() {
     lastSnapshot: null,
     warmupPromise: null,
     lastWarmupFailureAt: 0,
+    pollInFlight: false,
   };
 }
 
 // Also the single writer of streamState.lastSnapshot, the cache handleSnapshot
 // serves from - see the comment above handleSnapshot for the cold-start contract.
 async function pollAndBroadcastChanges(streamState) {
-  const result = await runScript("fm-fleet-snapshot.sh", ["--json"], { timeoutMs: 20000 });
-  if (!result.ok) return;
-  let parsed;
+  if (streamState.pollInFlight) return;
+  streamState.pollInFlight = true;
   try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return;
+    const result = await runScript("fm-fleet-snapshot.sh", ["--json"], { timeoutMs: 20000 });
+    if (!result.ok) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return;
+    }
+    const hash = crypto.createHash("sha256").update(result.stdout, "utf8").digest("hex");
+    const changed = streamState.lastHash !== null && hash !== streamState.lastHash;
+    streamState.lastHash = hash;
+    streamState.lastSnapshot = parsed;
+    if (!changed) return;
+    for (const res of streamState.streams) writeToStream(streamState, res, "event: changed\ndata: {}\n\n");
+  } finally {
+    streamState.pollInFlight = false;
   }
-  const hash = crypto.createHash("sha256").update(result.stdout, "utf8").digest("hex");
-  const changed = streamState.lastHash !== null && hash !== streamState.lastHash;
-  streamState.lastHash = hash;
-  streamState.lastSnapshot = parsed;
-  if (!changed) return;
-  for (const res of streamState.streams) writeToStream(streamState, res, "event: changed\ndata: {}\n\n");
 }
 
 function broadcastKeepalive(streamState) {
