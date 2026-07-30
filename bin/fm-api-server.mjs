@@ -360,17 +360,21 @@ function runScript(scriptName, args, { timeoutMs = 30000 } = {}) {
 // and never runs the warm-up shell-out more than once.
 async function handleSnapshot(res, streamState) {
   if (streamState.lastSnapshot === null) {
-    const sinceFailure = Date.now() - streamState.lastWarmupFailureAt;
-    if (!streamState.warmupPromise && sinceFailure >= STREAM_POLL_MS) {
-      streamState.warmupPromise = pollAndBroadcastChanges(streamState)
-        .then(() => {
-          streamState.lastWarmupFailureAt = streamState.lastSnapshot === null ? Date.now() : 0;
-        })
-        .finally(() => {
-          streamState.warmupPromise = null;
-        });
+    if (streamState.pollPromise) {
+      await streamState.pollPromise;
+    } else {
+      const sinceFailure = Date.now() - streamState.lastWarmupFailureAt;
+      if (!streamState.warmupPromise && sinceFailure >= STREAM_POLL_MS) {
+        streamState.warmupPromise = pollAndBroadcastChanges(streamState)
+          .then(() => {
+            streamState.lastWarmupFailureAt = streamState.lastSnapshot === null ? Date.now() : 0;
+          })
+          .finally(() => {
+            streamState.warmupPromise = null;
+          });
+      }
+      await streamState.warmupPromise;
     }
-    await streamState.warmupPromise;
   }
   if (streamState.lastSnapshot === null) {
     sendJson(res, 502, { error: "snapshot failed" });
