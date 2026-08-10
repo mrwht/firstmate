@@ -333,6 +333,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/verification/api-server-launchd.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/dispatch-auth.md",
       "audience": "maintainer-verification"
     },

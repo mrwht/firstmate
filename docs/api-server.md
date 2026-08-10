@@ -19,6 +19,24 @@ bin/fm-api-server.sh stop
 
 `bin/fm-api-server.sh foreground` runs it attached, for debugging or under an external process supervisor.
 
+### Durable restart (macOS)
+
+`start`/`stop` above are manual and do not survive a crash or a reboot: if the process dies or the machine restarts, a remote client (such as the kanban board) starts getting connection errors until someone notices and runs `start` again.
+`bin/fm-api-server.sh install-launchd` registers a [launchd](https://www.launchd.info/) user agent that runs `foreground` under `RunAtLoad` and `KeepAlive`, so macOS restarts the server automatically after a crash and again after every login or reboot:
+
+```sh
+bin/fm-api-server.sh install-launchd     # register the agent for this FM_HOME
+bin/fm-api-server.sh status              # now also reports whether the agent is installed
+bin/fm-api-server.sh uninstall-launchd   # unregister it
+```
+
+The agent's label and plist file (under `~/Library/LaunchAgents`) are derived from a hash of this `FM_HOME`'s resolved path, so a secondmate home gets its own independent agent without colliding with the primary's.
+Re-running `install-launchd` replaces the previously installed agent, so it is safe to repeat after changing `FM_HOME`, the config, or the Node.js install it resolves at install time.
+
+`KeepAlive` only restarts the server on a non-clean exit (a crash, `kill -9`, or a startup config refusal such as a missing `config/api-token`); a deliberate `bin/fm-api-server.sh stop` sends `SIGTERM`, which the server treats as a clean shutdown, so launchd leaves it stopped until the next login or reboot brings it back via `RunAtLoad`.
+A `ThrottleInterval` (30s by default) bounds the restart rate, so a persistent startup refusal retries periodically instead of spinning in a tight loop.
+This never weakens the token-auth or bind-safety guard above: a misconfigured or unauthenticated start still refuses to bind, `install-launchd` just makes sure that refusal is retried instead of requiring someone to notice and restart it by hand.
+
 ## Auth and reachability
 
 Every route except `GET /healthz` requires `Authorization: Bearer <config/api-token contents>`.
@@ -49,5 +67,6 @@ If that warm-up fails, a later request retries it, backed off to at most once pe
 
 ## Verification
 
-`tests/fm-api-server.test.sh` covers both startup refusals, the override path actually lifting the guard and listening, bearer-token auth, routing (unknown route, wrong method, malformed body), a real `GET /v1/snapshot` against an empty sandbox home, every mutation endpoint's validation layer plus its honest 502 pass-through from the real wrapped script, and `GET /v1/stream`'s auth gate, `changed` event, and connection cap.
+`tests/fm-api-server.test.sh` covers both startup refusals, the override path actually lifting the guard and listening, bearer-token auth, routing (unknown route, wrong method, malformed body), a real `GET /v1/snapshot` against an empty sandbox home, every mutation endpoint's validation layer plus its honest 502 pass-through from the real wrapped script, `GET /v1/stream`'s auth gate, `changed` event, and connection cap, the `fm-api-server.sh` lifecycle wrapper (`init-token`/`start`/`status`/`stop`), and `install-launchd`/`uninstall-launchd`'s generated plist content and idempotency against a stubbed `launchctl`.
 `node --check bin/fm-api-server.mjs` verifies syntax; `bin/fm-lint.sh bin/fm-api-server.sh tests/fm-api-server.test.sh` covers the shell side.
+[`docs/verification/api-server-launchd.md`](verification/api-server-launchd.md) records a real kill-and-recover verification against actual launchd on macOS.

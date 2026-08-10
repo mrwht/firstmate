@@ -12,7 +12,11 @@
 # script fails against an empty sandbox (a nonexistent target/task/origin
 # fails fast and side-effect-free in every wrapped script except
 # fm-spawn.sh, so spawn is exercised at the validation layer only here - its
-# own execution is already covered by the dedicated backend test suites).
+# own execution is already covered by the dedicated backend test suites),
+# the bin/fm-api-server.sh lifecycle wrapper (init-token/start/status/stop),
+# and install-launchd/uninstall-launchd's generated plist content and
+# idempotency against a stubbed launchctl (real launchd behavior is recorded
+# separately in docs/verification/api-server-launchd.md).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -569,3 +573,91 @@ test_sh_wrapper_lifecycle() {
 }
 
 test_sh_wrapper_lifecycle
+
+# --- bin/fm-api-server.sh install-launchd / uninstall-launchd --------------
+#
+# These exercise only the plist-generation and launchctl-invocation logic,
+# against FM_LAUNCHD_DIR_OVERRIDE and a stubbed FM_LAUNCHCTL_OVERRIDE, so the
+# suite never touches a real launchd session. A real kill -9-and-recover
+# verification against actual launchd lives in
+# docs/verification/api-server-launchd.md.
+
+test_launchd_non_macos_refusal() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    pass "fm-api-server.sh: install-launchd non-macOS refusal not exercised on Darwin"
+    return 0
+  fi
+  local sandbox wrapper out
+  sandbox=$(fm_test_tmproot fm-api-server)
+  wrapper="$ROOT/bin/fm-api-server.sh"
+  out=$(FM_HOME="$sandbox" "$wrapper" install-launchd 2>&1) \
+    && fail "install-launchd should refuse on non-macOS"
+  assert_contains "$out" "macOS-only" "install-launchd should explain the macOS-only refusal"
+  pass "fm-api-server.sh: install-launchd refuses cleanly on non-macOS"
+}
+
+test_launchd_plist_and_lifecycle() {
+  if [ "$(uname -s)" != "Darwin" ]; then
+    pass "fm-api-server.sh: launchd plist generation skipped (not macOS)"
+    return 0
+  fi
+  command -v shasum >/dev/null 2>&1 || { pass "fm-api-server.sh: launchd plist generation skipped (no shasum)"; return 0; }
+
+  local sandbox wrapper launchd_dir fake_launchctl out label plist
+  sandbox=$(fm_test_tmproot fm-api-server)
+  wrapper="$ROOT/bin/fm-api-server.sh"
+  launchd_dir="$sandbox/launchagents"
+  mkdir -p "$launchd_dir"
+
+  fake_launchctl="$sandbox/fake-launchctl"
+  cat > "$fake_launchctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/launchctl.log"
+exit 0
+FAKE
+  chmod +x "$fake_launchctl"
+
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" FM_LAUNCHCTL_OVERRIDE="$fake_launchctl" "$wrapper" install-launchd 2>&1) \
+    || fail "install-launchd should succeed with a stubbed launchctl"
+  assert_contains "$out" "installed:" "install-launchd should report the installed plist path"
+  assert_contains "$out" "config/api-token" "install-launchd should warn about a missing api-token"
+
+  plist=$(find "$launchd_dir" -name '*.plist')
+  [ -n "$plist" ] || fail "install-launchd should write exactly one plist"
+  label=$(basename "$plist" .plist)
+
+  assert_grep "<string>$sandbox</string>" "$plist" "plist should bind FM_HOME to this sandbox"
+  assert_grep "<string>foreground</string>" "$plist" "plist should launch the foreground subcommand, not start"
+  assert_grep "<key>RunAtLoad</key>" "$plist" "plist should set RunAtLoad"
+  assert_grep "<key>KeepAlive</key>" "$plist" "plist should set KeepAlive"
+  assert_grep "<key>SuccessfulExit</key>" "$plist" "plist KeepAlive should key off SuccessfulExit so a clean stop is not relaunched"
+  assert_grep "<key>ThrottleInterval</key>" "$plist" "plist should set a ThrottleInterval to bound the restart rate"
+
+  assert_grep "bootstrap gui/$(id -u) $plist" "$sandbox/launchctl.log" "install-launchd should bootstrap the agent"
+  assert_grep "enable gui/$(id -u)/$label" "$sandbox/launchctl.log" "install-launchd should enable the agent"
+
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" "$wrapper" status)
+  assert_contains "$out" "durable restart: installed" "status should report the agent as installed"
+
+  : > "$sandbox/launchctl.log"
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" FM_LAUNCHCTL_OVERRIDE="$fake_launchctl" "$wrapper" install-launchd) \
+    || fail "re-running install-launchd should be idempotent"
+  assert_grep "bootout gui/$(id -u)/$label" "$sandbox/launchctl.log" "reinstalling should bootout the previous agent first"
+
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" FM_LAUNCHCTL_OVERRIDE="$fake_launchctl" "$wrapper" uninstall-launchd) \
+    || fail "uninstall-launchd should succeed"
+  assert_contains "$out" "uninstalled:" "uninstall-launchd should report removal"
+  assert_absent "$plist" "uninstall-launchd should remove the plist file"
+
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" "$wrapper" status)
+  assert_contains "$out" "durable restart: not installed" "status should report the agent as not installed after uninstall"
+
+  out=$(FM_HOME="$sandbox" FM_LAUNCHD_DIR_OVERRIDE="$launchd_dir" FM_LAUNCHCTL_OVERRIDE="$fake_launchctl" "$wrapper" uninstall-launchd) \
+    || fail "uninstall-launchd should be a no-op success when nothing is installed"
+  assert_contains "$out" "not installed:" "uninstall-launchd should report nothing to remove"
+
+  pass "fm-api-server.sh: install-launchd/uninstall-launchd generate a correct, idempotent launchd agent"
+}
+
+test_launchd_non_macos_refusal
+test_launchd_plist_and_lifecycle
