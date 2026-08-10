@@ -84,13 +84,32 @@ require_macos() {
 }
 
 # launchd_label: derived from a hash of this FM_HOME's resolved absolute path
-# so distinct homes never collide on one shared ~/Library/LaunchAgents.
+# (same cd+pwd resolution FM_ROOT uses) so distinct invocations that name the
+# same physical home never collide on one shared ~/Library/LaunchAgents.
 launchd_label() {
   command -v shasum >/dev/null 2>&1 || {
     echo "error: shasum is required to derive the launchd agent label" >&2
     exit 1
   }
-  printf 'com.firstmate.api-server.%s' "$(printf '%s' "$FM_HOME" | shasum -a 256 | cut -c1-12)"
+  local resolved_home
+  resolved_home="$(cd "$FM_HOME" 2>/dev/null && pwd)" || resolved_home="$FM_HOME"
+  printf 'com.firstmate.api-server.%s' "$(printf '%s' "$resolved_home" | shasum -a 256 | cut -c1-12)"
+}
+
+# xml_escape: escape XML-significant characters for safe interpolation into
+# generated plist text content and attribute values.
+xml_escape() {
+  local s="$1"
+  # bash's ${var//pat/repl} treats a literal '&' in repl as "the matched
+  # text" (like sed), so every entity replacement below must escape its own
+  # '&' as '\&' or it would reinsert the just-matched character instead of
+  # the entity name.
+  s="${s//&/\&amp;}"
+  s="${s//</\&lt;}"
+  s="${s//>/\&gt;}"
+  s="${s//\"/\&quot;}"
+  s="${s//\'/\&apos;}"
+  printf '%s' "$s"
 }
 
 is_running() {
@@ -191,16 +210,30 @@ cmd_foreground() {
 cmd_install_launchd() {
   require_macos
   require_node
-  local label plist_path node_dir
+  local label plist_path node_dir esc_label esc_script_dir esc_fm_home esc_node_dir esc_logfile
   label="$(launchd_label)"
   plist_path="$LAUNCHD_DIR/$label.plist"
   node_dir="$(dirname "$(command -v node)")"
   mkdir -p "$LAUNCHD_DIR"
 
+  # The agent runs 'foreground' with RunAtLoad, so a still-running 'start'
+  # instance would race it for the same port; stop it first, the same way
+  # 'stop' would, so installing never leaves two servers contending.
+  if is_running; then
+    echo "stopping existing background instance (pid $(cat "$PIDFILE")) before installing durable restart..."
+    cmd_stop
+  fi
+
   # Idempotent reinstall: unload any previously installed agent for this
   # FM_HOME first so re-running this command safely picks up a changed
   # FM_HOME resolution, node path, or throttle setting.
   "$LAUNCHCTL" bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+
+  esc_label="$(xml_escape "$label")"
+  esc_script_dir="$(xml_escape "$SCRIPT_DIR")"
+  esc_fm_home="$(xml_escape "$FM_HOME")"
+  esc_node_dir="$(xml_escape "$node_dir")"
+  esc_logfile="$(xml_escape "$LOGFILE")"
 
   cat > "$plist_path" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -208,21 +241,21 @@ cmd_install_launchd() {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>$label</string>
+  <string>$esc_label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$SCRIPT_DIR/fm-api-server.sh</string>
+    <string>$esc_script_dir/fm-api-server.sh</string>
     <string>foreground</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>FM_HOME</key>
-    <string>$FM_HOME</string>
+    <string>$esc_fm_home</string>
     <key>PATH</key>
-    <string>$node_dir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>$esc_node_dir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>WorkingDirectory</key>
-  <string>$FM_HOME</string>
+  <string>$esc_fm_home</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -233,9 +266,9 @@ cmd_install_launchd() {
   <key>ThrottleInterval</key>
   <integer>$LAUNCHD_THROTTLE</integer>
   <key>StandardOutPath</key>
-  <string>$LOGFILE</string>
+  <string>$esc_logfile</string>
   <key>StandardErrorPath</key>
-  <string>$LOGFILE</string>
+  <string>$esc_logfile</string>
 </dict>
 </plist>
 PLIST
