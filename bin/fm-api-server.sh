@@ -23,6 +23,9 @@
 # other bin/*.sh script; it is passed through to fm-api-server.mjs unchanged.
 #
 # install-launchd / uninstall-launchd notes:
+# - install-launchd stops a still-running 'start' (pidfile) instance first,
+#   the same way 'stop' would, so there is never a foreground/pidfile
+#   collision on the same port once the agent takes over.
 # - The generated agent's Label and plist filename are derived from a hash of
 #   this FM_HOME's resolved absolute path, so distinct homes (e.g. a
 #   secondmate) each get their own independent agent under the same

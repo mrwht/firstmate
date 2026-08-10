@@ -105,6 +105,10 @@
     {
       "source": "docs/trace-context.md",
       "target": "docs/verification/trace-context.md"
+    },
+    {
+      "source": "docs/api-server.md",
+      "target": "docs/verification/api-server-launchd.md"
     }
   ],
   "surfaces": [

@@ -523,6 +523,7 @@ Never describe this path as at-least-once, no-loss, or lossless.
 `bin/fm-api-server.mjs`, launched through `bin/fm-api-server.sh`, is an optional network-facing HTTP API for one firstmate home - see [`docs/api-server.md`](api-server.md) for setup and [the script's own header comment](../bin/fm-api-server.mjs) for the exact route and auth contract, the single owner of both.
 It is off until `config/api-token` is created (`bin/fm-api-server.sh init-token`); all four config files are LOCAL and gitignored under `$FM_HOME/config`, matching every other per-home config item in "Operational home layout and state" above.
 `config/api-host` (default `127.0.0.1`) and `config/api-port` (default `8787`) choose the bind address; the server refuses to start on a non-loopback, non-private-range host unless `config/api-bind-override` (presence-only) is also present.
+On macOS, `bin/fm-api-server.sh install-launchd`/`uninstall-launchd` register or remove a launchd user agent that keeps the server running across a crash or reboot; see [`docs/api-server.md`](api-server.md)'s "Durable restart (macOS)" section for setup and behavior.
 
 ## Environment variables
 
@@ -536,6 +537,9 @@ FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
+FM_LAUNCHD_DIR_OVERRIDE=  # fm-api-server.sh install-launchd/uninstall-launchd: alternate plist directory instead of ~/Library/LaunchAgents, mainly for tests
+FM_LAUNCHCTL_OVERRIDE=   # fm-api-server.sh install-launchd/uninstall-launchd: alternate launchctl binary, mainly for tests against a stub
+FM_API_LAUNCHD_THROTTLE_OVERRIDE=30   # fm-api-server.sh install-launchd: ThrottleInterval seconds written into the generated plist
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)

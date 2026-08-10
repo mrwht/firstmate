@@ -2,7 +2,7 @@
 
 `bin/fm-api-server.mjs` is the single owner of the request/response contract, auth model, and bind-safety guard; this page is the operator-facing summary of setup and current behavior.
 It serves exactly one firstmate home over HTTP, so a remote client - the kanban board's server, running on separate hardware such as a homelab Pi - can read the fleet snapshot and drive the same five mutations a local crewmate would, without shelling out to `bin/*.sh` on this machine directly.
-`bin/fm-api-server.sh` manages the process (start/stop/status/foreground); it owns no part of the contract itself.
+`bin/fm-api-server.sh` manages the process (start/stop/status/foreground, plus macOS launchd install/uninstall for durable restart, see "Durable restart (macOS)" below); it owns no part of the contract itself.
 
 This reverses a deliberate local-only, no-auth design that predated it: a remote caller now needs a bearer token and a private-range bind address, where before there was no network surface at all.
 
@@ -31,10 +31,10 @@ bin/fm-api-server.sh uninstall-launchd   # unregister it
 ```
 
 The agent's label and plist file (under `~/Library/LaunchAgents`) are derived from a hash of this `FM_HOME`'s resolved path, so a secondmate home gets its own independent agent without colliding with the primary's.
-Re-running `install-launchd` replaces the previously installed agent, so it is safe to repeat after changing `FM_HOME`, the config, or the Node.js install it resolves at install time.
+Re-running `install-launchd` replaces the previously installed agent, so it is safe to repeat after changing `FM_HOME`, the config, or the Node.js install it resolves at install time; if a background instance started with `start` is still running, `install-launchd` stops it first so the launchd agent never collides with it on the same port.
 
 `KeepAlive` only restarts the server on a non-clean exit (a crash, `kill -9`, or a startup config refusal such as a missing `config/api-token`); a deliberate `bin/fm-api-server.sh stop` sends `SIGTERM`, which the server treats as a clean shutdown, so launchd leaves it stopped until the next login or reboot brings it back via `RunAtLoad`.
-A `ThrottleInterval` (30s by default) bounds the restart rate, so a persistent startup refusal retries periodically instead of spinning in a tight loop.
+A `ThrottleInterval` (30s by default, override with `FM_API_LAUNCHD_THROTTLE_OVERRIDE`) bounds the restart rate, so a persistent startup refusal retries periodically instead of spinning in a tight loop.
 This never weakens the token-auth or bind-safety guard above: a misconfigured or unauthenticated start still refuses to bind, `install-launchd` just makes sure that refusal is retried instead of requiring someone to notice and restart it by hand.
 
 ## Auth and reachability
