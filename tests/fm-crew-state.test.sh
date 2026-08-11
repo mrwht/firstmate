@@ -25,6 +25,14 @@
 #       This is the direct regression pair for the 2026-07-02 herdr incident,
 #       proving the watcher's own absorb-only-when-provably-working predicate
 #       benefits from the fix in both directions.
+#   (l) worktree/branch identity: a pooled worktree silently reassigned to a
+#       different task's branch reports unknown/none instead of the
+#       stranger's run-step or pane state; a recorded branch matching the
+#       live checkout is unaffected; a detached HEAD before the crew's first
+#       `git checkout -b` (not yet reassigned, just not yet branched) is not
+#       mistaken for a reassignment. Regression coverage for the live
+#       fm-livepush-sse-endpoint / fm-api-server-durable-restart misattribution
+#       (data/fm-crew-state-run-step-stale-terminal/report.md).
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1309,6 +1317,62 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+# (l) worktree/branch identity check ------------------------------------------
+
+# The worktree directory is checked out to a DIFFERENT task's branch, exactly
+# as a pooled worktree allocator reuse without a live-meta check would leave
+# it (fm-livepush-sse-endpoint's slot silently repointed to
+# fm-api-server-durable-restart while fm-livepush-sse-endpoint's own meta was
+# never torn down). Even a genuinely terminal run for the STRANGER's own
+# branch must never be read as this crew's state.
+test_worktree_reassigned_reports_unknown() {
+  reset_fakes
+  local d; d=$(new_case reassigned)
+  make_repo_on_branch "$d/wt" fm/stranger-task
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/orig-task.meta" "window=fm:fm-orig-task" "worktree=$d/wt" "kind=ship" "branch=fm/orig-task"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/stranger-task)"
+  local out; out=$(run_crew_state "$d" orig-task)
+  assert_contains "$out" "state: unknown" "reassigned worktree -> unknown, never the stranger's outcome"
+  assert_contains "$out" "source: none" "reassigned worktree -> none source"
+  assert_contains "$out" "fm/stranger-task" "detail names the worktree's actual live branch"
+  assert_contains "$out" "fm/orig-task" "detail names this crew's expected branch"
+  assert_not_contains "$out" "state: failed" "the stranger's terminal failure must not surface as this crew's state"
+  pass "worktree reassigned to another task's branch reports unknown instead of the stranger's outcome"
+}
+
+# A recorded branch that matches the live checkout (the ordinary case) must
+# not block the normal run-step read.
+test_branch_match_no_false_positive() {
+  reset_fakes
+  local d; d=$(new_case branch-match)
+  make_repo_on_branch "$d/wt" fm/feat-match
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-match.meta" "window=fm:fm-feat-match" "worktree=$d/wt" "kind=ship" "branch=fm/feat-match"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-match)"
+  local out; out=$(run_crew_state "$d" feat-match)
+  assert_contains "$out" "state: done" "matching recorded branch still reads the real run-step"
+  assert_contains "$out" "source: run-step" "matching recorded branch -> run-step source"
+  pass "a recorded branch matching the live checkout does not block the normal run-step read"
+}
+
+# Detached HEAD before the crew's first `git checkout -b` (the normal window
+# right after spawn) must not be mistaken for a reassignment: an empty live
+# branch is "not yet branched", not evidence of a stranger's checkout.
+test_detached_worktree_not_treated_as_reassigned() {
+  reset_fakes
+  local d; d=$(new_case detached-not-yet-branched)
+  make_repo_on_branch "$d/wt" fm/feat-notyet
+  git -C "$d/wt" checkout -q --detach
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-notyet.meta" "window=fm:fm-feat-notyet" "worktree=$d/wt" "kind=ship" "branch=fm/feat-notyet"
+  FM_FAKE_BUSY=1
+  local out; out=$(run_crew_state "$d" feat-notyet)
+  assert_not_contains "$out" "reassigned" "detached HEAD before the first checkout -b must not read as reassigned"
+  assert_contains "$out" "source: pane" "detached HEAD with no run yet falls back to the pane read"
+  pass "a not-yet-branched detached worktree is not mistaken for a reassignment"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1358,5 +1422,8 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
+test_worktree_reassigned_reports_unknown
+test_branch_match_no_false_positive
+test_detached_worktree_not_treated_as_reassigned
 
 echo "all fm-crew-state tests passed"

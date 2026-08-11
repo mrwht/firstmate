@@ -785,6 +785,29 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
   pass "fm-spawn --relaunch: with no explicit harness it reuses the task's recorded one, never the crew default"
 }
 
+# fm-crew-state.sh's worktree/branch identity check (data/fm-crew-state-run-
+# step-stale-terminal/report.md) depends on branch= being recomputed fresh on
+# every spawn, including a relaunch of an existing task whose meta predates
+# this field (add_ship_task's hand-written fixture meta carries no branch=,
+# matching a pre-fix live task). A relaunch must record exactly one
+# branch=fm/<id> line - never left absent, and never duplicated by
+# preserve_relaunch_meta copying a stale or missing prior value alongside it.
+test_spawn_relaunch_recomputes_branch_field() {
+  local dir count
+  dir=$(new_case spawnbranch rl35)
+  add_ship_task "$dir" rl35 claude
+  grep -q '^branch=' "$dir/home/state/rl35.meta" \
+    && fail "fixture meta unexpectedly already has a branch= line"
+  printf 'zsh' > "$dir/fake/command"
+  run_spawn "$dir" rl35 --relaunch >/dev/null
+  [ "$(meta_field "$dir" rl35 branch)" = fm/rl35 ] \
+    || fail "relaunch must record branch=fm/rl35, got '$(meta_field "$dir" rl35 branch)'"
+  count=$(grep -c '^branch=' "$dir/home/state/rl35.meta")
+  [ "$count" -eq 1 ] \
+    || fail "relaunch must record branch= exactly once, found $count lines"
+  pass "fm-spawn --relaunch: recomputes a single branch=fm/<id> line even when the prior meta had none"
+}
+
 # fm-spawn arms per-task wiring on harness PREFIXES, because a task launched
 # from a raw command records that command's basename rather than the exact
 # adapter name. Retirement must resolve the same way, or a task recorded as
@@ -1321,6 +1344,7 @@ test_secondmate_relaunch_onto_a_crewmate_only_adapter_refuses_before_stop
 test_explicit_secondmate_harness_ignores_configured_profile_axes
 test_ship_relaunch_ignores_the_crew_harness_config
 test_spawn_relaunch_without_a_harness_reuses_the_recorded_one
+test_spawn_relaunch_recomputes_branch_field
 test_prefixed_prior_harness_wiring_is_still_retired
 test_muse_session_binding_is_retired_on_a_harness_switch
 test_missing_worktree_refuses_before_stopping_anything

@@ -20,6 +20,12 @@
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
+#      When the meta recorded this crew's own branch at spawn and the
+#      worktree's live branch disagrees, a pooled worktree was silently
+#      reassigned to a different task: report unknown · none rather than
+#      trusting the stranger's run or pane state (a meta written before this
+#      field existed has nothing to compare against and falls through as
+#      before).
 #   2. Matching no-mistakes run for this crew's branch AND current code identity,
 #      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
 #      fallback)? Branch name alone is not enough: a historical run on a reused
@@ -101,6 +107,7 @@ meta_value() {  # <key>
 WT=$(meta_value worktree)
 KIND=$(meta_value kind)
 HARNESS=$(meta_value harness)
+BRANCH=$(meta_value branch)
 [ -n "$KIND" ] || KIND=ship
 
 # A torn-down (or never-created) worktree has no current state to read.
@@ -364,6 +371,21 @@ nm_runs_status_for_branch() {  # <branch>
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+# A pooled worktree can be silently reassigned to a different task while this
+# task's state/<id>.meta is still live, not torn down (live-reproduced:
+# data/fm-crew-state-run-step-stale-terminal/report.md). Left unchecked, the
+# run-step and pane reads below would confidently attribute the stranger
+# task's outcome to this crew. BRANCH (recorded at spawn per bin/fm-spawn.sh)
+# is this crew's OWN expected branch, independent of whatever the worktree
+# directory currently has checked out. An empty CREW_BRANCH just means the
+# crew has not made its first commit yet (still detached HEAD) - not
+# evidence of reassignment - so only a non-empty, disagreeing CREW_BRANCH
+# trips this guard. A meta written before this field existed has no BRANCH
+# to compare against and falls through unchanged.
+if [ -n "$BRANCH" ] && [ -n "$CREW_BRANCH" ] && [ "$CREW_BRANCH" != "$BRANCH" ]; then
+  emit unknown none "worktree checked out to $CREW_BRANCH, expected $BRANCH (reassigned?)"
+fi
 
 # 0 if the active axi-status run's head field matches this worktree's code
 # identity. Branch match is a precondition (caller). Rule owned by
