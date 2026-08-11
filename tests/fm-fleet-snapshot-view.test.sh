@@ -197,6 +197,49 @@ test_fixture_snapshot_json() {
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
 }
 
+test_invalid_parallelism_bounds_rejected() {
+  local home task_out task_rc secondmate_out secondmate_rc
+  home=$(make_home invalid-parallelism)
+  set +e
+  task_out=$(FM_HOME="$home" FM_SNAPSHOT_TASK_PARALLELISM=0 "$SNAPSHOT" --json 2>&1)
+  task_rc=$?
+  secondmate_out=$(FM_HOME="$home" FM_SNAPSHOT_SECONDMATE_PARALLELISM=not-a-number "$SNAPSHOT" --json 2>&1)
+  secondmate_rc=$?
+  set -e
+  [ "$task_rc" -eq 2 ] || fail "a zero FM_SNAPSHOT_TASK_PARALLELISM was accepted (got exit $task_rc)"
+  [ "$secondmate_rc" -eq 2 ] || fail "a non-integer FM_SNAPSHOT_SECONDMATE_PARALLELISM was accepted (got exit $secondmate_rc)"
+  assert_contains "$task_out" 'FM_SNAPSHOT_TASK_PARALLELISM must be a positive integer' \
+    "invalid task parallelism did not explain its constraint"
+  assert_contains "$secondmate_out" 'FM_SNAPSHOT_SECONDMATE_PARALLELISM must be a positive integer' \
+    "invalid secondmate parallelism did not explain its constraint"
+  pass "fm-fleet-snapshot rejects non-positive-integer parallelism bounds"
+}
+
+# The additive-not-multiplicative guarantee: task_json_lines forces itself to a
+# single in-flight task under --secondmate-home-summary regardless of
+# FM_SNAPSHOT_TASK_PARALLELISM, since that mode is itself one of several
+# concurrent recursive calls from a parent's secondmate loop. Proven
+# deterministically (not by racing on timing) via snapshot_wait_for_slot's hard
+# synchronization: with max_parallel forced to 1, every dispatch can only start
+# once the prior job has fully drained, so FM_SNAPSHOT_CONCURRENCY_LOG's
+# recorded in-flight count before each task dispatch is provably always 0.
+test_secondmate_home_summary_forces_serial_task_dispatch() {
+  local home fakebin conc_log rows nonzero
+  home=$(make_home forced-serial)
+  write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  conc_log=$TMP_ROOT/forced-serial-concurrency.tsv
+  : > "$conc_log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_TASK_PARALLELISM=8 \
+    FM_SNAPSHOT_CONCURRENCY_LOG="$conc_log" "$SNAPSHOT" --secondmate-home-summary >/dev/null 2>&1
+  rows=$(awk -F'\t' '$2 == "task"' "$conc_log" | wc -l | tr -d ' ')
+  [ "$rows" -ge 2 ] || fail "expected multiple logged task dispatches to prove serialization, got $rows: $(cat "$conc_log")"
+  nonzero=$(awk -F'\t' '$2 == "task" && $4 != 0' "$conc_log" | wc -l | tr -d ' ')
+  [ "$nonzero" -eq 0 ] \
+    || fail "a --secondmate-home-summary task dispatch observed >0 in-flight siblings despite FM_SNAPSHOT_TASK_PARALLELISM=8: $(cat "$conc_log")"
+  pass "task_json_lines forces single in-flight task dispatch under --secondmate-home-summary regardless of FM_SNAPSHOT_TASK_PARALLELISM"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -781,6 +824,8 @@ test_parked_scout_decision_stays_pending() {
 
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_invalid_parallelism_bounds_rejected
+test_secondmate_home_summary_forces_serial_task_dispatch
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

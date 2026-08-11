@@ -46,8 +46,8 @@
 //   GET  /v1/stream                   ping-only SSE, no wrapped script; see below
 //   POST /v1/send                     bin/fm-send.sh <target> <text|--key K>
 //   POST /v1/decision-hold/resolve    bin/fm-decision-hold.sh resolve ...
-//   POST /v1/promote                  bin/fm-promote.sh <task-id>
-//   POST /v1/spawn                    bin/fm-spawn.sh <task-id> ...
+//   POST /v1/promote                  bin/fm-promote.sh <task-id> --mode <mode> --yolo <on|off>
+//   POST /v1/spawn                    bin/fm-spawn.sh <task-id> ... (ship spawns also require --mode/--yolo)
 //   POST /v1/pr-merge                 bin/fm-pr-merge.sh <task-id> <pr-url>
 // GET /v1/snapshot and GET /v1/stream share one background poll loop (every
 // STREAM_POLL_MS) that runs bin/fm-fleet-snapshot.sh --json: the poll caches
@@ -133,6 +133,8 @@ const VERIFIED_HARNESSES = new Set([
   "kimi",
 ]);
 const BACKEND_VALUES = new Set(["tmux", "herdr", "zellij", "orca", "cmux"]);
+const MODE_VALUES = new Set(["no-mistakes", "direct-PR", "local-only"]);
+const YOLO_VALUES = new Set(["on", "off"]);
 const KNOWN_ROUTES = new Set([
   "/v1/snapshot",
   "/v1/stream",
@@ -498,9 +500,15 @@ async function handleDecisionResolve(body, res) {
 }
 
 async function handlePromote(body, res) {
-  const taskId = body.taskId;
+  const { taskId, mode, yolo } = body;
   if (!isSlug(taskId)) return sendJson(res, 400, { error: "taskId must be a slug" });
-  const result = await runScript("fm-promote.sh", [taskId], { timeoutMs: 20000 });
+  if (!MODE_VALUES.has(mode)) {
+    return sendJson(res, 400, { error: `mode must be one of ${[...MODE_VALUES].join(", ")}` });
+  }
+  if (!YOLO_VALUES.has(yolo)) {
+    return sendJson(res, 400, { error: `yolo must be one of ${[...YOLO_VALUES].join(", ")}` });
+  }
+  const result = await runScript("fm-promote.sh", [taskId, "--mode", mode, "--yolo", yolo], { timeoutMs: 20000 });
   if (!result.ok) {
     sendJson(res, 502, { error: "promote failed", stderr: result.stderr });
     return;
@@ -509,7 +517,7 @@ async function handlePromote(body, res) {
 }
 
 async function handleSpawn(body, res) {
-  const { taskId, projectDir, secondmate, firstmateHome, harness, model, effort, backend, scout } = body;
+  const { taskId, projectDir, secondmate, firstmateHome, harness, model, effort, backend, scout, mode, yolo } = body;
   if (!isSlug(taskId)) return sendJson(res, 400, { error: "taskId must be a slug" });
   if (harness !== undefined && !VERIFIED_HARNESSES.has(harness)) {
     return sendJson(res, 400, { error: `harness must be one of ${[...VERIFIED_HARNESSES].join(", ")}` });
@@ -522,6 +530,17 @@ async function handleSpawn(body, res) {
   }
   if (backend !== undefined && !BACKEND_VALUES.has(backend)) {
     return sendJson(res, 400, { error: `backend must be one of ${[...BACKEND_VALUES].join(", ")}` });
+  }
+  // A ship spawn (neither --secondmate nor --scout) requires --mode/--yolo,
+  // mirroring fm-spawn.sh's own explicit-only delivery contract (AGENTS.md
+  // section 7); a scout or secondmate spawn never carries either.
+  if (!secondmate && !scout) {
+    if (!MODE_VALUES.has(mode)) {
+      return sendJson(res, 400, { error: `mode must be one of ${[...MODE_VALUES].join(", ")}` });
+    }
+    if (!YOLO_VALUES.has(yolo)) {
+      return sendJson(res, 400, { error: `yolo must be one of ${[...YOLO_VALUES].join(", ")}` });
+    }
   }
 
   const args = [taskId];
@@ -544,6 +563,7 @@ async function handleSpawn(body, res) {
   if (backend !== undefined) args.push("--backend", backend);
   if (secondmate) args.push("--secondmate");
   else if (scout) args.push("--scout");
+  else args.push("--mode", mode, "--yolo", yolo);
 
   const result = await runScript("fm-spawn.sh", args, { timeoutMs: 180000 });
   if (!result.ok) {

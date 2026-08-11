@@ -364,9 +364,11 @@ test_send_validation_and_pass_through() {
 }
 
 test_promote_validation_and_pass_through() {
-  http_req POST /v1/promote "$TOKEN" '{"taskId":"not a slug"}'
+  http_req POST /v1/promote "$TOKEN" '{"taskId":"not a slug","mode":"no-mistakes","yolo":"off"}'
   expect_code 400 "$LAST_CODE" "promote bad slug"
   http_req POST /v1/promote "$TOKEN" '{"taskId":"nonexistent-task"}'
+  expect_code 400 "$LAST_CODE" "promote missing mode/yolo"
+  http_req POST /v1/promote "$TOKEN" '{"taskId":"nonexistent-task","mode":"no-mistakes","yolo":"off"}'
   expect_code 502 "$LAST_CODE" "promote nonexistent task"
   assert_contains "$LAST_BODY" "no meta for task" "promote 502 stderr detail"
   pass "fm-api-server: /v1/promote validates input and surfaces real fm-promote.sh failures"
