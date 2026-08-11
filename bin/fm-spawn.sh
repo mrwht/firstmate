@@ -1689,8 +1689,46 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+
+# Pooled worktrees are shared across every home in the fleet (a home's own
+# state/ dir routinely lives inside one of the same worktrees the pool hands
+# out for disposable task spawns), so "some other task still owns this path"
+# cannot be checked against this process's own FM_HOME alone. `git worktree
+# list` is the shared, tool-native enumeration of every worktree connected to
+# this repo's object store - homes and disposable task checkouts alike - so
+# walking it and reading each candidate's state/*.meta is what actually
+# covers cross-home claims without guessing at a pool-root path convention.
+# A meta file's mere existence means its task was never torn down
+# (bin/fm-teardown.sh removes it on landing), so this alone is the correct
+# "still live" signal; no separate liveness probe is needed here.
+worktree_claimed_by_other_task() {  # <worktree>
+  local worktree=$1 wt_real other_top other_real state_dir meta claimant claimant_real id
+  wt_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 1
+  while IFS= read -r other_top; do
+    [ -n "$other_top" ] || continue
+    other_real=$(cd "$other_top" 2>/dev/null && pwd -P) || continue
+    state_dir="$other_real/state"
+    [ -d "$state_dir" ] || continue
+    for meta in "$state_dir"/*.meta; do
+      [ -e "$meta" ] || continue
+      claimant=$(grep -m1 '^worktree=' "$meta" 2>/dev/null | cut -d= -f2-)
+      [ -n "$claimant" ] || continue
+      claimant_real=$(cd "$claimant" 2>/dev/null && pwd -P) || continue
+      if [ "$claimant_real" = "$wt_real" ]; then
+        id=$(basename "$meta" .meta)
+        echo "error: pooled worktree '$worktree' is still claimed by task '$id' (worktree= in '$meta'); refusing to recycle a live task's worktree" >&2
+        return 0
+      fi
+    done
+  done < <(git -C "$worktree" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+  return 1
+}
+
 freshen_spawn_worktree_base() {  # <worktree>
   local worktree=$1 default target expected actual status
+  if worktree_claimed_by_other_task "$worktree"; then
+    return 1
+  fi
   if ! git -C "$worktree" fetch --quiet origin; then
     echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1

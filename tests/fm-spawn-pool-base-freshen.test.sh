@@ -158,6 +158,52 @@ test_unreachable_origin_refuses_stale_pool_base() {
   pass "an unreachable origin refuses a potentially stale pooled worktree"
 }
 
+test_pooled_worktree_claimed_elsewhere_refuses_reuse() {
+  local rec id out status before
+  id='pool-claimed-elsewhere-r6'
+  rec=$(make_case claimed-elsewhere "$id")
+  read_case_record "$rec"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  # A different home's still-live task meta claims this exact pooled worktree.
+  # $PROJECT_DIR is itself a worktree of the same repo as $POOL_DIR (git
+  # worktree add's origin), so it stands in for "another home" here.
+  mkdir -p "$PROJECT_DIR/state"
+  printf 'worktree=%s\nkind=ship\n' "$POOL_DIR" > "$PROJECT_DIR/state/other-live-task.meta"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn succeeded despite the pooled worktree still being claimed by another live task"
+  assert_contains "$out" "still claimed by task 'other-live-task'" \
+    "spawn did not clearly refuse a pooled worktree claimed by another live task"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn reset a pooled worktree that another live task's meta still claims"
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '# observed claimed-elsewhere refusal: %s\n' "$(printf '%s\n' "$out" | tail -n 1)"
+  fi
+  pass "a pooled worktree still claimed by another live task's meta refuses reuse without resetting it"
+}
+
+test_pooled_worktree_meta_pointing_elsewhere_does_not_block_reuse() {
+  local rec id out status current
+  id='pool-claim-elsewhere-noop-r7'
+  rec=$(make_case claim-elsewhere-noop "$id")
+  read_case_record "$rec"
+
+  # A live task meta exists, but its worktree= names a different directory,
+  # so it must not block reuse of $POOL_DIR.
+  mkdir -p "$PROJECT_DIR/state" "$CASE_DIR/unrelated-worktree"
+  printf 'worktree=%s\nkind=ship\n' "$CASE_DIR/unrelated-worktree" > "$PROJECT_DIR/state/unrelated-task.meta"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should ignore a live task meta that claims a different worktree"
+  current=$(git -C "$POOL_DIR" rev-parse origin/main)
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$current" ] \
+    || fail "spawn did not refresh the pooled worktree despite the unrelated claim"
+  pass "a live task meta claiming a different worktree does not block reuse of this one"
+}
+
 test_direct_pr_and_scout_refresh_before_launch() {
   local rec id out status contract current
   for contract in direct-pr scout; do
@@ -233,5 +279,7 @@ test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
+test_pooled_worktree_claimed_elsewhere_refuses_reuse
+test_pooled_worktree_meta_pointing_elsewhere_does_not_block_reuse
 
 echo "# all fm-spawn-pool-base-freshen tests passed"
