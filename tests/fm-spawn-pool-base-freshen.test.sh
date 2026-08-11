@@ -158,21 +158,41 @@ test_unreachable_origin_refuses_stale_pool_base() {
   pass "an unreachable origin refuses a potentially stale pooled worktree"
 }
 
+# A claimant "home" must be a worktree of $ROOT (the firstmate tool's own
+# repo that fm-spawn.sh's own FM_ROOT resolves to in every test in this
+# file), never of the fixture's throwaway $PROJECT_DIR repo: production
+# claimant homes are always firstmate-repo worktrees, while the pooled
+# worktree being recycled is normally a checkout of some unrelated managed
+# project's own repo. Cleaned up unconditionally so a failed assertion never
+# leaves a stray worktree registered against the real checkout under test.
+make_other_home() {
+  local name=$1 home
+  home="$TMP_ROOT/$name-other-home"
+  git -C "$ROOT" worktree add --quiet --detach "$home" HEAD >/dev/null
+  mkdir -p "$home/state"
+  printf '%s\n' "$home"
+}
+
+remove_other_home() {
+  git -C "$ROOT" worktree remove --force "$1" >/dev/null 2>&1 || true
+}
+
 test_pooled_worktree_claimed_elsewhere_refuses_reuse() {
-  local rec id out status before
+  local rec id out status before other_home
   id='pool-claimed-elsewhere-r6'
   rec=$(make_case claimed-elsewhere "$id")
   read_case_record "$rec"
   before=$(git -C "$POOL_DIR" rev-parse HEAD)
 
-  # A different home's still-live task meta claims this exact pooled worktree.
-  # $PROJECT_DIR is itself a worktree of the same repo as $POOL_DIR (git
-  # worktree add's origin), so it stands in for "another home" here.
-  mkdir -p "$PROJECT_DIR/state"
-  printf 'worktree=%s\nkind=ship\n' "$POOL_DIR" > "$PROJECT_DIR/state/other-live-task.meta"
+  # A different home's still-live task meta claims this exact pooled
+  # worktree, even though the pooled worktree itself belongs to a completely
+  # unrelated project repo ($PROJECT_DIR), never to the firstmate repo.
+  other_home=$(make_other_home claimed-elsewhere)
+  printf 'worktree=%s\nkind=ship\n' "$POOL_DIR" > "$other_home/state/other-live-task.meta"
 
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
+  remove_other_home "$other_home"
   [ "$status" -ne 0 ] || fail "spawn succeeded despite the pooled worktree still being claimed by another live task"
   assert_contains "$out" "still claimed by task 'other-live-task'" \
     "spawn did not clearly refuse a pooled worktree claimed by another live task"
@@ -181,22 +201,24 @@ test_pooled_worktree_claimed_elsewhere_refuses_reuse() {
   if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
     printf '# observed claimed-elsewhere refusal: %s\n' "$(printf '%s\n' "$out" | tail -n 1)"
   fi
-  pass "a pooled worktree still claimed by another live task's meta refuses reuse without resetting it"
+  pass "a pooled worktree still claimed by another live task's meta refuses reuse without resetting it, even across unrelated project repos"
 }
 
 test_pooled_worktree_meta_pointing_elsewhere_does_not_block_reuse() {
-  local rec id out status current
+  local rec id out status current other_home
   id='pool-claim-elsewhere-noop-r7'
   rec=$(make_case claim-elsewhere-noop "$id")
   read_case_record "$rec"
 
-  # A live task meta exists, but its worktree= names a different directory,
-  # so it must not block reuse of $POOL_DIR.
-  mkdir -p "$PROJECT_DIR/state" "$CASE_DIR/unrelated-worktree"
-  printf 'worktree=%s\nkind=ship\n' "$CASE_DIR/unrelated-worktree" > "$PROJECT_DIR/state/unrelated-task.meta"
+  # A live task meta exists in another home, but its worktree= names a
+  # different directory, so it must not block reuse of $POOL_DIR.
+  other_home=$(make_other_home claim-elsewhere-noop)
+  mkdir -p "$CASE_DIR/unrelated-worktree"
+  printf 'worktree=%s\nkind=ship\n' "$CASE_DIR/unrelated-worktree" > "$other_home/state/unrelated-task.meta"
 
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
+  remove_other_home "$other_home"
   expect_code 0 "$status" "spawn should ignore a live task meta that claims a different worktree"
   current=$(git -C "$POOL_DIR" rev-parse origin/main)
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$current" ] \

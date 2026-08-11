@@ -1690,17 +1690,21 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 }
 
 
-# Pooled worktrees are shared across every home in the fleet (a home's own
-# state/ dir routinely lives inside one of the same worktrees the pool hands
-# out for disposable task spawns), so "some other task still owns this path"
-# cannot be checked against this process's own FM_HOME alone. `git worktree
-# list` is the shared, tool-native enumeration of every worktree connected to
-# this repo's object store - homes and disposable task checkouts alike - so
-# walking it and reading each candidate's state/*.meta is what actually
-# covers cross-home claims without guessing at a pool-root path convention.
-# A meta file's mere existence means its task was never torn down
-# (bin/fm-teardown.sh removes it on landing), so this alone is the correct
-# "still live" signal; no separate liveness probe is needed here.
+# Homes and the worktrees a pool hands out for disposable task spawns are not
+# the same repo in general: a task's worktree is a pooled checkout of whatever
+# project it targets, while the home whose state/*.meta might still claim that
+# path is a checkout of the firstmate TOOL's own repo. `git worktree list`
+# only enumerates worktrees sharing one object store, so it must be run
+# against $FM_ROOT (this home's own firstmate checkout) - every firstmate
+# home is one of that same repo's worktrees, regardless of which project's
+# repo the candidate pooled worktree itself belongs to - not against the
+# candidate worktree, which would only ever surface a claim when the target
+# project happens to be the firstmate repo itself. Walking that list and
+# reading each candidate's state/*.meta is what actually covers cross-home
+# claims without guessing at a pool-root path convention. A meta file's mere
+# existence means its task was never torn down (bin/fm-teardown.sh removes it
+# on landing), so this alone is the correct "still live" signal; no separate
+# liveness probe is needed here.
 worktree_claimed_by_other_task() {  # <worktree>
   local worktree=$1 wt_real other_top other_real state_dir meta claimant claimant_real id
   wt_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 1
@@ -1720,7 +1724,7 @@ worktree_claimed_by_other_task() {  # <worktree>
         return 0
       fi
     done
-  done < <(git -C "$worktree" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+  done < <(git -C "$FM_ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
   return 1
 }
 
