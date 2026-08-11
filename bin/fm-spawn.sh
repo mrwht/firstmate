@@ -1706,8 +1706,14 @@ validate_spawn_worktree() {  # <source> <inspect-target>
 # on landing), so this alone is the correct "still live" signal; no separate
 # liveness probe is needed here.
 worktree_claimed_by_other_task() {  # <worktree>
-  local worktree=$1 wt_real other_top other_real state_dir meta claimant claimant_real id
-  wt_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 1
+  # Return codes: 0 = claimed by a live task, 1 = confirmed not claimed,
+  # 2 = could not determine (caller must refuse rather than treat as unclaimed).
+  local worktree=$1 wt_real other_top other_real state_dir meta claimant claimant_real id worktree_list
+  wt_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 2
+  worktree_list=$(git -C "$FM_ROOT" worktree list --porcelain 2>&1) || {
+    echo "error: could not list worktrees under '$FM_ROOT' to check for a live claim on pooled worktree '$worktree'; refusing to recycle it: $worktree_list" >&2
+    return 2
+  }
   while IFS= read -r other_top; do
     [ -n "$other_top" ] || continue
     other_real=$(cd "$other_top" 2>/dev/null && pwd -P) || continue
@@ -1724,13 +1730,18 @@ worktree_claimed_by_other_task() {  # <worktree>
         return 0
       fi
     done
-  done < <(git -C "$FM_ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+  done < <(printf '%s\n' "$worktree_list" | awk '/^worktree /{print substr($0,10)}')
   return 1
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
-  if worktree_claimed_by_other_task "$worktree"; then
+  local worktree=$1 default target expected actual status claim_status
+  worktree_claimed_by_other_task "$worktree"
+  claim_status=$?
+  if [ "$claim_status" -ne 1 ]; then
+    if [ "$claim_status" -eq 2 ]; then
+      echo "error: could not confirm pooled worktree '$worktree' is unclaimed; refusing to recycle it" >&2
+    fi
     return 1
   fi
   if ! git -C "$worktree" fetch --quiet origin; then
