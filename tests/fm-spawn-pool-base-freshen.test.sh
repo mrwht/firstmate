@@ -226,6 +226,51 @@ test_pooled_worktree_meta_pointing_elsewhere_does_not_block_reuse() {
   pass "a live task meta claiming a different worktree does not block reuse of this one"
 }
 
+# A real-world worktree-list failure (a corrupted object store, a permissions
+# problem, etc.) must not be treated the same as "no other home claims this
+# worktree": the ownership check has to fail closed and refuse to recycle
+# rather than silently proceeding as if it had confirmed the worktree free.
+inject_failing_worktree_list_git() {
+  local fakebin=$1 real_git
+  real_git=$(command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+set -u
+case "\$*" in
+  *"worktree list --porcelain"*)
+    echo "fake-git: simulated failure listing worktrees" >&2
+    exit 1
+    ;;
+esac
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+}
+
+test_worktree_list_failure_refuses_reuse() {
+  local rec id out status before
+  id='pool-worktree-list-failure-r8'
+  rec=$(make_case worktree-list-failure "$id")
+  read_case_record "$rec"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  inject_failing_worktree_list_git "$FAKEBIN_DIR"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn succeeded despite being unable to list worktrees to check for a live claim"
+  assert_contains "$out" "could not list worktrees" \
+    "spawn did not report the worktree-list failure"
+  assert_contains "$out" "could not confirm pooled worktree" \
+    "spawn did not fail closed when it could not confirm the pooled worktree was unclaimed"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn reused a pooled worktree it could not confirm was unclaimed"
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '# observed worktree-list-failure refusal: %s\n' "$(printf '%s\n' "$out" | tail -n 1)"
+  fi
+  pass "an inability to list worktrees fails closed and refuses to recycle the pooled worktree"
+}
+
 test_direct_pr_and_scout_refresh_before_launch() {
   local rec id out status contract current
   for contract in direct-pr scout; do
@@ -303,5 +348,6 @@ test_unresolved_remote_default_refuses_pool
 test_unreachable_origin_refuses_stale_pool_base
 test_pooled_worktree_claimed_elsewhere_refuses_reuse
 test_pooled_worktree_meta_pointing_elsewhere_does_not_block_reuse
+test_worktree_list_failure_refuses_reuse
 
 echo "# all fm-spawn-pool-base-freshen tests passed"
