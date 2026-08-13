@@ -19,6 +19,11 @@
 #  10. fm-send secondmate path embeds corr and creates durable pending records
 #  11. Backend busy/idle observation works through the shared busy abstraction
 #      used by Pi/Claude secondmate backends (no conversation scrape)
+#  12. --no-reply-expected marks a secondmate send but creates no pending-reply
+#      expectation, and refuses loud on a target that never marks anyway
+#  13. Regression (2026-08-13 incident): closing a stale pending-reply-missed
+#      escalation with --resolve-key + --no-reply-expected spawns no new
+#      pending-reply record for the acknowledgment itself
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -30,6 +35,7 @@ set -u
 
 SEND="$ROOT/bin/fm-send.sh"
 REPORT="$ROOT/bin/fm-secondmate-report.sh"
+DRAIN="$ROOT/bin/fm-wake-drain.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pending-reply)
 
 export FM_PENDING_REPLY_GRACE_SECS=0
@@ -88,6 +94,14 @@ run_send() {
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
     FM_PENDING_REPLY_GRACE_SECS=0 \
     "$SEND" "$@" 2>/dev/null
+}
+
+drain_out() {  # <state-dir>
+  FM_STATE_OVERRIDE="$1" "$DRAIN" 2>/dev/null
+}
+
+pending_record_count() {  # <state-dir>
+  find "$1/pending-replies" -type f 2>/dev/null | wc -l | tr -d ' '
 }
 
 phase_of() {  # <state> <corr>
@@ -795,6 +809,103 @@ test_fm_send_marked_secondmate_creates_pending_and_embeds_corr() {
   pass "fm-send marked secondmate path creates pending and embeds corr"
 }
 
+test_no_reply_expected_creates_no_pending_record() {
+  local dir fb log home rc got
+  dir="$TMP_ROOT/no-reply-expected"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_parent no-reply-expected)
+  fm_write_secondmate_meta "$home/state/hibit.meta" "$home/sm" "sess:fm-hibit"
+
+  run_send "$fb" "$home" "$log" hibit --no-reply-expected \
+    "closing out the stale notice, no longer chasing a reply"
+  rc=$?
+  expect_code 0 "$rc" "a fire-and-forget secondmate send should succeed"
+  got=$(cat "$log")
+  case "$got" in
+    "$FM_FROMFIRST_MARK"*) : ;;
+    *) fail "fire-and-forget send must still carry the from-firstmate marker"$'\n'"$(printf '%s' "$got" | od -An -c)" ;;
+  esac
+  case "$got" in
+    *corr=*) fail "fire-and-forget send must not embed a corr token: $got" ;;
+  esac
+  [ "$(pending_record_count "$home/state")" = 0 ] \
+    || fail "--no-reply-expected must create no pending-reply record (got $(pending_record_count "$home/state"))"
+  pass "fm-send --no-reply-expected: a marked fire-and-forget send creates no pending-reply expectation"
+}
+
+test_no_reply_expected_refuses_for_unmarked_target() {
+  local dir fb log home err rc
+  dir="$TMP_ROOT/no-reply-refuse"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_parent no-reply-refuse)
+  fm_write_meta "$home/state/build.meta" \
+    "window=sess:fm-build" "worktree=$home/wt" "project=$home/p" \
+    "harness=echo" "kind=ship" "mode=no-mistakes" "yolo=off"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" build --no-reply-expected "hello" >/dev/null 2>"$err"
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "--no-reply-expected on an unmarked crewmate target should refuse"
+  assert_contains "$(cat "$err")" "needs a task selector" "the refusal should explain the requirement"
+  [ ! -s "$log" ] || fail "a refused --no-reply-expected send still typed text: $(cat "$log")"
+  pass "fm-send --no-reply-expected: refuses loud on a target that never marks anyway"
+}
+
+# Regression for the 2026-08-13 live incident: firstmate sent geordi and obrien
+# short acknowledgment messages closing out earlier stale pending-reply-missed
+# notices, and each acknowledgment - being an ordinary marked secondmate send -
+# itself created a BRAND NEW pending-reply expectation with nothing left to
+# correlate it, which would in turn age into its own missed-report escalation:
+# a self-perpetuating loop. Separately, --resolve-key could never actually close
+# a pending-reply-<corr> decision because its "answered: " note never satisfied
+# the reserved-key vocabulary check, forcing a hand-edited status line as a
+# workaround. The fixed workflow closes the stale escalation with --resolve-key
+# (now producing a vocabulary-satisfying note) and marks the acknowledgment
+# itself --no-reply-expected (so it creates nothing new) in the same send.
+test_ack_close_of_stale_escalation_creates_no_new_expectation() {
+  local dir fb log home state corr rc out
+  dir="$TMP_ROOT/ack-close-incident"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_parent ack-close-incident)
+  state="$home/state"
+  fm_write_secondmate_meta "$state/geordi.meta" "$home/sm" "sess:fm-geordi"
+
+  export FM_PENDING_REPLY_NOW=5000
+  corr=$(fm_pending_reply_create "$home" "$state" geordi "why is the backup job stuck")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  fm_pending_reply_mark_turn_completed "$state" "$corr" request
+  export FM_PENDING_REPLY_SEND_HOOK='true'
+  fm_pending_reply_send_recovery "$state" "$corr" || fail "recovery send failed"
+  fm_pending_reply_mark_turn_completed "$state" "$corr" recovery
+  fm_pending_reply_maybe_escalate "$state" "$corr" || fail "escalation should fire"
+  unset FM_PENDING_REPLY_SEND_HOOK FM_PENDING_REPLY_NOW
+
+  [ "$(pending_record_count "$state")" = 1 ] \
+    || fail "precondition: exactly one pending-reply record should exist before the ack"
+  out=$(drain_out "$state")
+  printf '%s' "$out" | grep -F "[key=pending-reply-$corr]" >/dev/null \
+    || fail "precondition: the escalation should list as an open decision before the ack: $out"
+
+  run_send "$fb" "$home" "$log" geordi --resolve-key "pending-reply-$corr" --no-reply-expected \
+    "closing this out, no longer chasing a reply"
+  rc=$?
+  expect_code 0 "$rc" "the acknowledgment send should succeed"
+
+  [ "$(pending_record_count "$state")" = 1 ] \
+    || fail "the acknowledgment must not spawn a new pending-reply record (still expect 1, got $(pending_record_count "$state"))"
+  grep -F "resolved [key=pending-reply-$corr]: pending-reply-answered: closing this out, no longer chasing a reply" \
+    "$state/geordi.status" >/dev/null \
+    || fail "the ack should close the escalation with a vocabulary-satisfying note:"$'\n'"$(cat "$state/geordi.status")"
+
+  out=$(drain_out "$state")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the acknowledged escalation still lists as open: $out"
+  fi
+  pass "fm-send --resolve-key + --no-reply-expected: closing a stale escalation spawns no new pending-reply record"
+}
+
 test_document_pointer_resolves() {
   local home state corr
   home=$(setup_parent doc-pointer)
@@ -1108,6 +1219,9 @@ test_restart_preserves_expectation_and_parent_destination
 test_wrong_home_detected_not_acknowledged
 test_unmarked_captain_input_creates_no_expectation
 test_fm_send_marked_secondmate_creates_pending_and_embeds_corr
+test_no_reply_expected_creates_no_pending_record
+test_no_reply_expected_refuses_for_unmarked_target
+test_ack_close_of_stale_escalation_creates_no_new_expectation
 test_document_pointer_resolves
 test_helper_report_resolves
 test_busy_idle_observation_via_backend_abstraction
