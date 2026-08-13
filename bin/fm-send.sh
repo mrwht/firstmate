@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
