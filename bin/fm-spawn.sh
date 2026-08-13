@@ -2602,11 +2602,10 @@ fi
 # report rather than a merge (fm-teardown.sh defaults an absent mode to
 # no-mistakes, and fm-promote.sh requires an explicit mode when a scout is
 # promoted to a ship task).
-SECONDMATE_PROJECTS=
+: "${SECONDMATE_PROJECTS:=}"
 if [ "$KIND" = secondmate ]; then
   MODE=secondmate
   YOLO=off
-  : "${SECONDMATE_PROJECTS:=}"
 elif [ "$KIND" = scout ]; then
   MODE=
   YOLO=
