@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -37,6 +37,18 @@
 # re-sending a recovery request for an already-open expectation so a second
 # record is not created. Direct unmarked captain input never creates one.
 #
+# Fire-and-forget marked sends: pass --no-reply-expected for a marked secondmate
+# send that is not itself a request needing a tracked reply - an acknowledgment,
+# an FYI, a reclassification of an earlier notice. The message is still marked
+# from-firstmate (the secondmate still routes any reply via its status channel),
+# but no pending-reply expectation is created, so the send cannot age into its
+# own pending-reply-missed escalation. Without this flag every marked send,
+# including a routine acknowledgment, opens an expectation that will escalate
+# if the secondmate never echoes the embedded corr= token back - closing out a
+# stale escalation with an unmarked acknowledgment would otherwise just create
+# the next one. Refused with --key (no text is sent) and with a target that
+# does not resolve to a marked secondmate send (nothing to suppress there).
+#
 # Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
 # before the message) when this send answers an open keyed needs-decision: or
 # blocked: record in the target task's state/<id>.status. After the submit is
@@ -58,6 +70,17 @@
 # working:, or done: event still cannot clear a captain decision. The flag is
 # refused with --key, with an explicit backend target (no task ledger in this
 # home), and with an empty message.
+#
+# A key in a reserved namespace (bin/fm-classify-lib.sh's
+# FM_CLASSIFY_RESERVED_KEY_PREFIXES, currently pending-reply-<corr>) closes only
+# when its note speaks that namespace's own vocabulary, so the closing note gets
+# that namespace's prefix instead of the plain "answered: " one - this is what
+# lets --resolve-key close a pending-reply-missed escalation at all; a plain
+# "answered: " note there would silently fail the reserved-key check and leave
+# the decision open forever. This closes only the captain-facing decision line;
+# it never marks the underlying pending-reply record itself resolved, because
+# that record's safety property is that only a correlated secondmate report may
+# do that (bin/fm-pending-reply-lib.sh).
 #
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
@@ -103,6 +126,8 @@ fi
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -308,6 +333,7 @@ fm_send_add_resolve_key() {  # <key>
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
 }
+NO_REPLY_EXPECTED=0
 while :; do
   case "${1:-}" in
     --resolve-key)
@@ -317,6 +343,10 @@ while :; do
       ;;
     --resolve-key=*)
       fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
+      shift
+      ;;
+    --no-reply-expected)
+      NO_REPLY_EXPECTED=1
       shift
       ;;
     *) break ;;
@@ -339,6 +369,21 @@ TARGET_TASK_ID=
 if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
   MARK_FROM_FIRSTMATE=1
   TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
+fi
+
+# --no-reply-expected only has meaning for a marked secondmate send: refuse
+# loud rather than silently doing nothing when the target never marks anyway,
+# and refuse with --key for the same reason --resolve-key does (a fire-and-
+# forget send is still text, not a key press).
+if [ "$NO_REPLY_EXPECTED" = 1 ]; then
+  if [ "$MARK_FROM_FIRSTMATE" != 1 ]; then
+    echo "error: --no-reply-expected needs a task selector resolved through this home's metadata whose kind is secondmate; other targets never create a pending-reply expectation" >&2
+    exit 1
+  fi
+  if [ "${1:-}" = "--key" ]; then
+    echo "error: --no-reply-expected cannot accompany --key; a fire-and-forget send requires a text message" >&2
+    exit 1
+  fi
 fi
 
 # Validate the answerer-closes request before any durable mutation or send: the
@@ -378,13 +423,30 @@ fi
 # Close each answered decision in this home's ledger, only after delivery is
 # fully confirmed. An append failure exits nonzero with the manual close
 # command; the decision then stays open and re-surfaces, never silently lost.
+# The close is this home's own bookkeeping, written by the very turn that
+# answered the decision, so it goes through the guarded self-announced append
+# (bin/fm-wake-lib.sh) and does not wake this same session again; any
+# concurrent foreign status bytes leave the watcher's wake path untouched.
 fm_send_close_resolved_keys() {  # <answer-text>
-  local note=$1 k line
+  local note=$1 k line prefix reserved_prefix answer_note append_rc
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_KEYS; do
-    line="resolved [key=$k]: answered: $note"
+    reserved_prefix=
+    for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+      case "$k" in
+        "$prefix"*) reserved_prefix=$prefix; break ;;
+      esac
+    done
+    if [ -n "$reserved_prefix" ]; then
+      answer_note="${reserved_prefix}answered: $note"
+    else
+      answer_note="answered: $note"
+    fi
+    line="resolved [key=$k]: $answer_note"
     fm_cap_line_var "$line"
-    if ! printf '%s\n' "$FM_LINE_CAP_LINE" >> "$RESOLVE_STATUS_FILE"; then
+    append_rc=0
+    fm_wake_status_append_self_announced "$STATE" "$RESOLVE_STATUS_FILE" "$FM_LINE_CAP_LINE" || append_rc=$?
+    if [ "$append_rc" -eq 2 ]; then
       echo "error: the answer was delivered to $T, but decision key '$k' could not be closed in $RESOLVE_STATUS_FILE. Close it manually with: echo 'resolved [key=$k]: <how it was answered>' >> $RESOLVE_STATUS_FILE - do not resend the answer." >&2
       return 1
     fi
@@ -428,7 +490,13 @@ else
   # The pre-marker answer text, kept for the closing resolved note so the
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
-  if [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$NO_REPLY_EXPECTED" = 1 ]; then
+    # Fire-and-forget: still route through the from-firstmate carrier so the
+    # secondmate treats it as an operational message, but create no pending-
+    # reply expectation - this send is not itself a request needing a tracked
+    # reply, so it must never age into its own pending-reply-missed escalation.
+    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
+  elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
     # Reuse an existing correlation id for recovery resends; otherwise create a
     # durable parent expectation before delivery. Transport success never
     # resolves that expectation (see fm-pending-reply-lib.sh).

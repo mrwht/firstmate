@@ -21,6 +21,11 @@
 #      message crosses the stubbed ssh transport while the close is the same
 #      local ledger append; a failed transport closes nothing.
 #   7. Flag misuse (--key, empty message, explicit backend target) refuses.
+#   8. A key in a reserved namespace (pending-reply-<corr>) only closes when its
+#      note speaks that namespace's vocabulary; the plain "answered: " note used
+#      for ordinary keys would silently fail bin/fm-classify-lib.sh's
+#      reserved-key check and leave a pending-reply-missed escalation open
+#      forever, so a reserved key gets a namespace-prefixed note instead.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -130,6 +135,42 @@ test_answer_send_closes_open_decision() {
     fail "the answered decision still lists as open: $out"
   fi
   pass "fm-send --resolve-key: the answer send itself closes the open decision"
+}
+
+# The answerer's close is this home's own bookkeeping: it must not re-wake the
+# session that wrote it, while any other writer's later line on the same task
+# still must. Both directions are read through the production seen-signature
+# gate the watcher's signal scan consumes (bin/fm-wake-lib.sh).
+test_answer_close_is_self_announced() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/self-announced"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home self-announced)
+  fm_write_meta "$home/state/t9.meta" "window=sess:fm-t9" "kind=ship"
+  printf 'needs-decision [key=port-choice]: 8080 or 9090\n' > "$home/state/t9.status"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    sig=$(fm_wake_signal_sig "$3") || exit 1
+    printf "%s" "$sig" > "$(fm_wake_signal_seen_path "$2" "$3")"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$home/state/t9.status" \
+    || fail "could not prime the announced baseline"
+
+  run_send "$fb" "$home" "$log" t9 --resolve-key port-choice "use 9090"; rc=$?
+  expect_code 0 "$rc" "the answer send should succeed"
+  grep -F 'resolved [key=port-choice]: answered: use 9090' "$home/state/t9.status" >/dev/null \
+    || fail "the closing resolved line is missing"
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_signal_seen_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$home/state/t9.status" \
+    || fail "the answerer's own close was left to re-wake this same home"
+
+  printf 'done: worker finished after the answer\n' >> "$home/state/t9.status"
+  if FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"; fm_wake_signal_seen_current "$2" "$3"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state" "$home/state/t9.status"; then
+    fail "a later worker line after the self-announced close was swallowed"
+  fi
+  pass "fm-send --resolve-key: the close never re-wakes its own home, later lines still do"
 }
 
 # The reported failure behind issue #2109: a worker that put the colon first
@@ -357,6 +398,42 @@ test_remote_secondmate_answer_closes_locally() {
   pass "fm-send --resolve-key: a remote-secondmate answer closes the same local ledger, transport-only difference"
 }
 
+# The reported failure: a remote secondmate reply line prepends a
+# "[corr=<hex>]" correlation tag ahead of "[key=...]"
+# (needs-decision [corr=d448ea86afa4bf67] [key=x]: ...). The verb parser used
+# to strip only a leading "[key=...]" token, so the corr tag stayed glued onto
+# the returned verb and the fold never recognized the line as a decision at
+# all - "--resolve-key x" refused with "no open decision with that key" even
+# though the key was right there on the line. This drives the real fm-send
+# over that exact line shape and asserts the answer now succeeds and closes it.
+test_remote_reply_corr_tag_does_not_block_resolve_key() {
+  local dir fb log home ssh_log rc out
+  dir="$TMP_ROOT/remote-corr-tag"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; ssh_log="$dir/ssh.log"; : > "$ssh_log"
+  home=$(setup_remote_home remote-corr-tag)
+  printf 'needs-decision [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: pick the cadence\n' \
+    > "$home/state/rsm.status"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=loan-installment-cadence-amount]' >/dev/null \
+    || fail "precondition: the corr-tagged remote decision should list as open under its stated key: $out"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    FM_SSH_BIN="$fb/fake-ssh" FM_SSH_LOG="$ssh_log" FM_FAKE_SSH_RC=0 \
+    "$SEND" rsm --resolve-key loan-installment-cadence-amount "monthly" >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "answering a corr-tagged remote decision should succeed, not refuse as unknown"
+  grep -F 'resolved [key=loan-installment-cadence-amount]: answered: monthly' "$home/state/rsm.status" >/dev/null \
+    || fail "the closing resolved line is missing:"$'\n'"$(cat "$home/state/rsm.status")"
+
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the answered corr-tagged remote decision still lists as open: $out"
+  fi
+  pass "fm-send --resolve-key: a remote reply's leading [corr=...] tag no longer blocks closing its stated key"
+}
+
 test_remote_transport_failure_does_not_close() {
   local dir fb log home ssh_log rc out
   dir="$TMP_ROOT/remote-fail"; mkdir -p "$dir"
@@ -377,6 +454,35 @@ test_remote_transport_failure_does_not_close() {
   printf '%s' "$out" | grep -F '[key=quota]' >/dev/null \
     || fail "the remote blocker vanished after a failed transport: $out"
   pass "fm-send --resolve-key: a failed remote transport never closes the decision"
+}
+
+test_reserved_pending_reply_key_closes_with_prefixed_note() {
+  local dir fb log home rc out corr
+  dir="$TMP_ROOT/pending-reply-key"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home pending-reply-key)
+  fm_write_meta "$home/state/t9.meta" "window=sess:fm-t9" "kind=ship"
+  corr=abcdef0123456789
+  printf 'blocked [key=pending-reply-%s]: pending-reply-missed: task=t9 pending-reply-id=%s request=why is phase 7 stuck\n' \
+    "$corr" "$corr" > "$home/state/t9.status"
+
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F "[key=pending-reply-$corr]" >/dev/null \
+    || fail "precondition: the pending-reply escalation should list as open before the answer: $out"
+
+  run_send "$fb" "$home" "$log" t9 --resolve-key "pending-reply-$corr" \
+    "closing this out, no longer chasing a reply"
+  rc=$?
+  expect_code 0 "$rc" "an answer closing a reserved pending-reply key should succeed"
+  grep -F "resolved [key=pending-reply-$corr]: pending-reply-answered: closing this out, no longer chasing a reply" \
+    "$home/state/t9.status" >/dev/null \
+    || fail "the closing note must carry the pending-reply- prefix so the reserved-key check accepts it:"$'\n'"$(cat "$home/state/t9.status")"
+
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the answered pending-reply escalation still lists as open: $out"
+  fi
+  pass "fm-send --resolve-key: a reserved pending-reply- key closes with a vocabulary-satisfying note"
 }
 
 test_flag_misuse_refuses() {
@@ -425,6 +531,7 @@ test_flag_misuse_refuses() {
 }
 
 test_answer_send_closes_open_decision
+test_answer_close_is_self_announced
 test_colon_first_key_position_is_answerable
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
@@ -433,5 +540,7 @@ test_failed_send_does_not_close
 test_multiple_keys_close_together
 test_local_secondmate_answer_marked_and_closed
 test_remote_secondmate_answer_closes_locally
+test_remote_reply_corr_tag_does_not_block_resolve_key
 test_remote_transport_failure_does_not_close
+test_reserved_pending_reply_key_closes_with_prefixed_note
 test_flag_misuse_refuses
