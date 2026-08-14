@@ -1249,8 +1249,10 @@ secondmate_record_json() {  # <row-json> <resolved-home-reason-host-remote-file>
   # A single non-whitespace-class delimiter (not tab): bash's `read` collapses
   # consecutive IFS-whitespace delimiters (tab is one, per POSIX field
   # splitting), which would silently swallow the empty host/reason fields that
-  # every ordinary (non-remote) secondmate row carries.
-  IFS=$'\x01' read -r home reason host remote <"$resolved_file"
+  # every ordinary (non-remote) secondmate row carries. Record separator
+  # (0x1e), not 0x01: stock macOS Bash 3.2's `read` fails to split on 0x01 and
+  # merges every field into the first instead.
+  IFS=$'\x1e' read -r home reason host remote <"$resolved_file"
 
   summary='{}'
   summary_valid=false
@@ -1434,7 +1436,7 @@ secondmate_current_json() {  # <parent-tasks-json>
         esac
       fi
     fi
-    printf '%s\x01%s\x01%s\x01%s\n' "$home" "$reason" "$host" "$remote" >"$resolve_dir/$id.resolved"
+    printf '%s\x1e%s\x1e%s\x1e%s\n' "$home" "$reason" "$host" "$remote" >"$resolve_dir/$id.resolved"
   done <<EOF
 $rows
 EOF
