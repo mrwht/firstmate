@@ -2047,6 +2047,43 @@ EOF
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
+# fm_backend_herdr_create_validation_view: open a disposable, UNTRACKED
+# companion tab in <container> ("session:workspace_id") running a live,
+# read-only `no-mistakes attach` view, cwd'd at <cwd>. Unlike
+# fm_backend_herdr_create_task, this never refuses on a duplicate label and
+# is never recorded in a task's meta or reconciled by recovery: firstmate
+# never adopts, husk-checks, or closes it by identity, so re-running
+# validation (or recovering a stuck crew) may simply leave more than one
+# copy sitting in the workspace. That is harmless clutter, not
+# misidentification, and the companion tab is always safe to discard
+# regardless of whether the validation run it was watching is still active
+# or already finished.
+# Failure here is deliberately non-fatal to the CALLER's larger flow: this
+# function itself still reports one error and returns 1, but a caller
+# opening this purely as a captain convenience must never let that failure
+# block the validation run it is trying to watch.
+# Echoes "<tab_id> <pane_id>" on success.
+fm_backend_herdr_create_validation_view() {  # <container> <label> <cwd>
+  local container=$1 label=$2 cwd=$3 session wsid out tab_id pane_id
+  session=${container%%:*}
+  wsid=${container#*:}
+  out=$(fm_backend_herdr_cli "$session" tab create --workspace "$wsid" --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || {
+    echo "error: herdr tab create failed for validation view '$label' in workspace $wsid (session $session)" >&2
+    return 1
+  }
+  tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+    echo "error: could not parse tab/pane id from herdr tab create output for validation view '$label'" >&2
+    return 1
+  fi
+  fm_backend_herdr_send_text_line "$session:$pane_id" "no-mistakes attach" || {
+    echo "error: created validation view tab $tab_id but could not start no-mistakes attach in pane $pane_id" >&2
+    return 1
+  }
+  printf '%s %s' "$tab_id" "$pane_id"
+}
+
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.

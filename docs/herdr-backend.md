@@ -67,6 +67,11 @@ Existing task operations use recorded endpoint ids and do not move a live task w
 The per-home workspace is reused while it has task tabs.
 Closing its last tab can remove the workspace, and the next spawn recreates it.
 
+A no-mistakes-mode ship brief also tells the crewmate to run `bin/fm-herdr-validation-attach.sh` right before every `/no-mistakes` invocation.
+On herdr it opens one disposable companion tab, labeled `fm-<id>-view` and cwd'd at the task worktree, live-attached to that run for the captain to watch; on every other backend it no-ops.
+That tab carries no recovery identity: it is never written into the task's meta, never adopted or husk-checked, and never closed by `bin/fm-teardown.sh`, so it is always safe to leave behind.
+The script's own header owns the exact mechanics.
+
 ## Presentation spaces
 
 Each new crewmate or scout is placed in a disposable one-task workspace by default, on Herdr 0.8.0 and newer.
@@ -333,6 +338,7 @@ tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
+tests/fm-herdr-validation-attach-smoke.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```

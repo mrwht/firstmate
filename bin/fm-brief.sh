@@ -179,6 +179,8 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+META_FILE=$(shell_quote "$STATE/$ID.meta")
+VALIDATION_ATTACH_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-validation-attach.sh")
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -395,6 +397,8 @@ You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+
+Each time you are about to invoke /no-mistakes (the first run and any rerun), first run \`$VALIDATION_ATTACH_HELPER $META_FILE\` in your own shell. It no-ops silently on every backend except herdr; on herdr it opens a separate, disposable companion tab already attached read-only to the run so the captain can watch it without asking. Ignore its exit status either way and proceed straight to /no-mistakes: a failed or skipped companion view is never a reason to pause or retry.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
