@@ -765,6 +765,67 @@ test_wrong_home_detected_not_acknowledged() {
   pass "wrong-home reports are detected but do not silently acknowledge"
 }
 
+# Regression: a secondmate can legitimately echo the same corr= token in its
+# own local bookkeeping (routine self-logging of a request it is also
+# correctly answering on the parent channel) without that echo meaning the
+# request was only answered in the wrong place. Before this fix, a wrong-home
+# hit was recorded purely as sidecar metadata with no visible trace on the
+# parent status stream, so a captain-facing supervisor had no way to learn
+# about it short of reading state/pending-replies/<corr_id> directly - and if
+# the genuinely correct reply were somehow delayed or malformed, the record
+# would sit escalated forever with no signal pointing at the (still
+# unresolved but evidenced) request. This must not happen: new wrong-home
+# evidence is now surfaced as its own open decision on the parent channel,
+# and a genuinely correct parent-channel reply must still resolve the request
+# regardless of any wrong-home evidence, with that notice then closing too.
+test_wrong_home_hit_notifies_but_correct_reply_still_resolves() {
+  local home state sm_home corr rec hits out
+  home=$(setup_parent wrong-home-notify)
+  state="$home/state"
+  sm_home="$TMP_ROOT/sm-home-notify-$RANDOM"
+  mkdir -p "$sm_home/state"
+  export FM_PENDING_REPLY_NOW=8100
+  corr=$(fm_pending_reply_create "$home" "$state" "hibit" "report to parent")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  printf 'working [key=some-local-task] corr=%s: dispatched to my own worker\n' "$corr" \
+    > "$sm_home/state/hibit.status"
+  fm_pending_reply_detect_wrong_home "$state" "$corr" "$sm_home" \
+    || fail "wrong-home detect should succeed"
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  hits=$(fm_pending_reply_get "$rec" wrong_home_hits)
+  [ "$hits" = 1 ] || fail "expected exactly one wrong-home sighting, got $hits"
+
+  # The evidence must be visible on the parent channel, not just the sidecar.
+  grep -Fq "pending-reply-wrong-home-$corr" "$state/hibit.status" \
+    || fail "wrong-home evidence was not surfaced on the parent status stream: $(cat "$state/hibit.status")"
+  out=$(drain_out "$state")
+  printf '%s' "$out" | grep -F "[key=pending-reply-wrong-home-$corr]" >/dev/null \
+    || fail "wrong-home evidence should list as its own open decision: $out"
+
+  # Re-detecting unchanged evidence must not spam a second notice line.
+  fm_pending_reply_detect_wrong_home "$state" "$corr" "$sm_home" \
+    || fail "repeated wrong-home detect should succeed"
+  [ "$(grep -c "pending-reply-wrong-home-$corr" "$state/hibit.status")" = 1 ] \
+    || fail "unchanged wrong-home evidence should not re-notify"
+
+  # The genuinely correct reply, on the parent channel, must still resolve -
+  # wrong-home evidence is supporting context, never a block on resolution.
+  printf 'done [corr=%s]: applied and shipped\n' "$corr" >> "$state/hibit.status"
+  fm_pending_reply_try_resolve "$state" "$corr" \
+    || fail "a genuinely correct parent-channel reply must still resolve despite wrong-home evidence"
+  [ "$(phase_of "$state" "$corr")" = resolved ] || fail "record should be resolved"
+
+  # And the wrong-home notice itself closes once the record resolves, so it
+  # does not sit open forever alongside a genuinely settled request.
+  out=$(drain_out "$state")
+  if printf '%s' "$out" | grep -F "[key=pending-reply-wrong-home-$corr]" >/dev/null; then
+    fail "the wrong-home notice should close once the record resolves: $out"
+  fi
+  grep -Fq "resolved [key=pending-reply-wrong-home-$corr]" "$state/hibit.status" \
+    || fail "closing line for the wrong-home notice should be written: $(cat "$state/hibit.status")"
+  pass "wrong-home evidence is surfaced but a genuinely correct parent reply still resolves, and the notice closes"
+}
+
 test_unmarked_captain_input_creates_no_expectation() {
   local dir fb log home rc pending_count
   dir="$TMP_ROOT/unmarked"; mkdir -p "$dir"
@@ -1127,8 +1188,14 @@ test_tick_skips_terminal_and_reuses_target_observation() {
     [ -n "$snapshot" ] || fail "wrong-home scan should persist its file-set signature"
     fm_pending_reply_tick "$state"
     scans=$(wc -l < "$scan_log" | tr -d ' ')
-    [ "$scans" = 3 ] \
-      || fail "unchanged records should scan two open and one escalated status only once, got $scans"
+    # 3 from the first tick (open1, open2, escalated's own try_resolve attempt)
+    # plus 1 more: the first tick's wrong-home hit also opens a notice on the
+    # escalated record's own parent_status file, which changes that file's
+    # signature and earns it exactly one more try_resolve attempt on the
+    # second tick (still a miss, since the notice line carries no corr=
+    # token) before its signature is unchanged and caches again.
+    [ "$scans" = 4 ] \
+      || fail "unchanged records should scan two open once and the escalated status twice (one wrong-home notice invalidates its cache once), got $scans"
     [ "$(fm_pending_reply_get "$rec" wrong_home_scan_signature)" = "$snapshot" ] \
       || fail "unchanged wrong-home logs should retain their scan signature"
   ) || fail "terminal-skip and observation-cache regression failed"
@@ -1247,6 +1314,7 @@ test_delivery_confirmation_fallback_reconciles
 test_unrelated_and_stale_corr_cannot_resolve
 test_restart_preserves_expectation_and_parent_destination
 test_wrong_home_detected_not_acknowledged
+test_wrong_home_hit_notifies_but_correct_reply_still_resolves
 test_unmarked_captain_input_creates_no_expectation
 test_fm_send_marked_secondmate_creates_pending_and_embeds_corr
 test_no_reply_expected_creates_no_pending_record
