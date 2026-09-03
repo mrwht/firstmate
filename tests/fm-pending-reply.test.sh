@@ -954,6 +954,35 @@ test_busy_idle_observation_via_backend_abstraction() {
   pass "backend busy/idle observation covers Pi/Claude paths without conversation scrape"
 }
 
+test_idle_without_busy_waits_for_grace() (
+  local home state corr rec
+  home=$(setup_parent idle-no-busy)
+  state="$home/state"
+  # This fixture clock and grace override are intentionally scoped to this
+  # subshell so they cannot leak into later tests that assume the file-wide
+  # FM_PENDING_REPLY_GRACE_SECS=0 default set above.
+  # shellcheck disable=SC2030
+  export FM_PENDING_REPLY_GRACE_SECS=10
+  # shellcheck disable=SC2030
+  export FM_PENDING_REPLY_NOW=9300
+  corr=$(fm_pending_reply_create "$home" "$state" "hibit" "fast or stale turn")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  # An idle read with no prior busy sighting, before grace has elapsed, must
+  # not be mistaken for proof the turn (and any reaction to the delivered
+  # message) has actually completed - the target may not have started
+  # reacting to the message yet.
+  fm_pending_reply_observe_busy "$state" "$corr" idle
+  [ -z "$(fm_pending_reply_get "$rec" request_turn_completed_epoch)" ] \
+    || fail "idle with no prior busy sighting must not prove completion before grace"
+  # shellcheck disable=SC2030
+  export FM_PENDING_REPLY_NOW=9311
+  fm_pending_reply_observe_busy "$state" "$corr" idle
+  [ -n "$(fm_pending_reply_get "$rec" request_turn_completed_epoch)" ] \
+    || fail "idle with no prior busy sighting should prove completion once grace elapses"
+  pass "idle without a prior busy sighting waits for grace before proving completion"
+)
+
 test_unknown_backend_state_uses_capture_fallback() {
   local backend
   for backend in tmux zellij; do
@@ -963,8 +992,9 @@ test_unknown_backend_state_uses_capture_fallback() {
       state="$home/state"
       sm_home="$home/sm"
       mkdir -p "$sm_home/state"
-      export FM_PENDING_REPLY_GRACE_SECS=10
       # These fixture overrides are intentionally scoped to the isolated subshell.
+      # shellcheck disable=SC2030,SC2031
+      export FM_PENDING_REPLY_GRACE_SECS=10
       # shellcheck disable=SC2030,SC2031
       export FM_PENDING_REPLY_NOW=10000
       corr=$(fm_pending_reply_create "$home" "$state" "hibit" "$backend fallback")
@@ -1225,6 +1255,7 @@ test_ack_close_of_stale_escalation_creates_no_new_expectation
 test_document_pointer_resolves
 test_helper_report_resolves
 test_busy_idle_observation_via_backend_abstraction
+test_idle_without_busy_waits_for_grace
 test_unknown_backend_state_uses_capture_fallback
 test_kimi_capture_fallback_uses_recorded_harness
 test_tick_skips_terminal_and_reuses_target_observation

@@ -587,13 +587,15 @@ fm_pending_reply_observe_busy() {  # <state-dir> <corr_id> <busy_state>
       fi
       ;;
     idle)
-      if [ -z "$completed" ]; then
-        # Prefer a busy->idle transition. Also accept a pure idle after delivery
-        # when the first observation already missed the busy window (fast turns).
-        if [ "$seen" = 1 ] || [ "$seen" = 0 ]; then
-          now=$(fm_pending_reply_now)
-          fm_pending_reply_set "$rec" "$field_completed" "$now" || return 1
-        fi
+      if [ -z "$completed" ] && fm_pending_reply_fallback_idle_eligible "$rec"; then
+        # A genuine busy->idle transition (seen=1) proves completion immediately;
+        # a pure idle without ever having observed busy only proves completion
+        # once the grace period has also elapsed (mirrors the weak-signal gate
+        # this same helper applies to a raw fallback-idle observation below), so
+        # a target caught idle before it has even started reacting to the
+        # delivered message cannot be mistaken for a completed turn.
+        now=$(fm_pending_reply_now)
+        fm_pending_reply_set "$rec" "$field_completed" "$now" || return 1
       fi
       ;;
     unknown)
