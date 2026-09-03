@@ -15,7 +15,12 @@
 # and escalate once if the recovery turn also completes without a correlated
 # report. Never loop, never repeatedly inject, never silently expire unresolved
 # records, and never treat wrong-home or structured-home heuristics as
-# acknowledgement.
+# acknowledgement. New wrong-home evidence is still surfaced to the parent
+# through its own reserved key (fm_pending_reply_notify_wrong_home) so it is
+# never silent - a secondmate can legitimately echo the same corr= token in
+# its own local bookkeeping while also replying correctly on the parent
+# channel, so this evidence is a distinct decision from the missed-report
+# escalation, never a way to resolve it.
 #
 # Record location (parent FM_HOME):
 #   state/pending-replies/<corr_id>
@@ -65,6 +70,13 @@
 # no other writer into the same status stream - a local mate appending directly,
 # or a remote mate's mirrored line - can take the key over or clear it; see the
 # reserved-key rule in bin/fm-classify-lib.sh.
+# A wrong-home sighting opens a sibling decision under its own reserved key
+# (fm_pending_reply_wrong_home_key, "pending-reply-wrong-home-<corr_id>"),
+# closed the same way once the record resolves
+# (fm_pending_reply_close_wrong_home_notice). It is deliberately a separate
+# key from the missed-report escalation above so evidence-only wrong-home
+# sightings can never be mistaken for, or interfere with closing, that
+# escalation.
 #
 # Sourced by bin/fm-send.sh, bin/fm-watch.sh, bin/fm-secondmate-report.sh, and
 # tests. No side effects on source. set -u / set -e safe.
@@ -554,6 +566,7 @@ _fm_pending_reply_try_resolve_locked() {  # <state-dir> <corr_id> [status-file-o
   # The record is resolved either way; a failed close stays retryable from the
   # watcher tick rather than turning a settled request back into a failure.
   _fm_pending_reply_close_escalation_locked "$state" "$corr" || true
+  _fm_pending_reply_close_wrong_home_notice_locked "$state" "$corr" || true
   return 0
 }
 
@@ -1055,9 +1068,85 @@ fm_pending_reply_detect_wrong_home() {  # <state-dir> <corr_id> <secondmate-home
   if [ "$changed" = 1 ]; then
     fm_pending_reply_set "$rec" wrong_home_sightings "$sightings" || return 1
     fm_pending_reply_set "$rec" wrong_home_hits "$hits" || return 1
+    fm_pending_reply_notify_wrong_home "$rec" "$corr" "$hits" || true
   fi
   fm_pending_reply_set "$rec" wrong_home_scan_signature "$snapshot" || return 1
   return 0
+}
+
+# Surface newly discovered wrong-home evidence on the parent channel so it
+# reaches firstmate through the ordinary status-append wake path instead of
+# requiring a direct read of this record's sidecar file. A genuinely-correct
+# reply can still accumulate wrong-home hits (the secondmate's own local
+# bookkeeping legitimately echoes the same corr= token while also replying
+# correctly on the parent channel), so this never resolves the underlying
+# request - it only ensures the evidence is not silent. It opens a distinct,
+# independently-closeable decision under its own reserved key so it cannot be
+# confused with, or interfere with, the missed-report escalation's own key
+# (bin/fm-classify-lib.sh's reserved-key fold keeps the two separate).
+fm_pending_reply_wrong_home_key() {  # <corr_id>
+  printf 'pending-reply-wrong-home-%s' "$1"
+}
+
+fm_pending_reply_notify_wrong_home() {  # <record-path> <corr_id> <hits>
+  local rec=$1 corr=$2 hits=$3 parent_status task_id line
+  parent_status=$(fm_pending_reply_get "$rec" parent_status)
+  task_id=$(fm_pending_reply_get "$rec" task_id)
+  [ -n "$parent_status" ] && [ -n "$task_id" ] || return 1
+  mkdir -p "$(dirname "$parent_status")" 2>/dev/null || return 1
+  line="blocked [key=$(fm_pending_reply_wrong_home_key "$corr")]: pending-reply-wrong-home: task=$task_id pending-reply-id=$corr wrong_home_hits=$hits - a correlated status line was found under the secondmate's own home while this request is still unresolved on the parent channel; this does not by itself acknowledge the request - confirm whether it was actually answered, then resolve with fm-send --resolve-key $(fm_pending_reply_wrong_home_key "$corr"), or steer the secondmate to reply through the parent channel"
+  grep -Fqx "$line" "$parent_status" 2>/dev/null && return 0
+  printf '%s\n' "$line" >> "$parent_status" 2>/dev/null || return 1
+  return 0
+}
+
+# Close the wrong-home evidence notice fm_pending_reply_notify_wrong_home may
+# have opened, mirroring _fm_pending_reply_close_escalation_locked's shape.
+# Unlike that escalation, this decision's note text changes on every new
+# sighting (the hit count is embedded), so closing does not need to match a
+# specific open note: bin/fm-classify-lib.sh's fold keeps at most one open
+# entry per key, so any vocabulary-satisfying resolved line for this key
+# closes whatever note is currently open.
+_fm_pending_reply_close_wrong_home_notice_locked() {  # <state-dir> <corr_id>
+  local state=$1 corr=$2 rec parent_status key open_line open_key close_line close_rc
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  [ -f "$rec" ] || return 1
+  [ "$(fm_pending_reply_get "$rec" wrong_home_hits)" != 0 ] || return 0
+  parent_status=$(fm_pending_reply_get "$rec" parent_status)
+  [ -n "$parent_status" ] || return 1
+  key=$(fm_pending_reply_wrong_home_key "$corr")
+  while IFS= read -r open_line; do
+    [ -n "$open_line" ] || continue
+    open_key=${open_line%%$'\t'*}
+    [ "$open_key" = "$key" ] || continue
+    close_line=$(printf 'resolved [key=%s]: pending-reply-wrong-home-resolved: task=%s pending-reply-id=%s via=%s' \
+      "$key" "$(fm_pending_reply_get "$rec" task_id)" "$corr" \
+      "$(fm_pending_reply_get "$rec" resolved_via)")
+    close_rc=0
+    fm_wake_status_append_self_announced "${parent_status%/*}" "$parent_status" "$close_line" \
+      2>/dev/null || close_rc=$?
+    [ "$close_rc" -ne 2 ] || return 1
+    return 0
+  done <<EOF
+$(status_open_decisions "$parent_status")
+EOF
+  return 0
+}
+
+# Public, locked entry point mirroring fm_pending_reply_close_escalation's
+# shape: cheap no-op unless a wrong-home notice for this record is still
+# open, so a later tick can retry the close after a transient write failure.
+fm_pending_reply_close_wrong_home_notice() {  # <state-dir> <corr_id>
+  local state=$1 corr=$2 lock rc=0
+  local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  STATE=$state
+  lock="$state/.pending-reply-$corr.lock"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$_FM_PENDING_REPLY_LIB_DIR/fm-wake-lib.sh"
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_pending_reply_close_wrong_home_notice_locked "$@" || rc=$?
+  fm_lock_release "$lock"
+  return "$rc"
 }
 
 # One reconciliation tick for a single record: resolve, observe, recover, escalate.
@@ -1149,6 +1238,7 @@ fm_pending_reply_tick() {  # <state-dir>
       # Cheap no-op unless an escalation for this record is still open; this is
       # the retry that makes the close converge after a transient write failure.
       fm_pending_reply_close_escalation "$state" "$corr" || true
+      fm_pending_reply_close_wrong_home_notice "$state" "$corr" || true
       continue
     fi
     fm_pending_reply_reconcile_delivery "$state" "$corr" || true
