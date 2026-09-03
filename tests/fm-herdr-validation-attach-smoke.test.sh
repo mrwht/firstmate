@@ -20,9 +20,6 @@ HELPER="$ROOT/bin/fm-herdr-validation-attach.sh"
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
-cleanup_all() { :; }
-trap cleanup_all EXIT
-
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-validation-attach.XXXXXX")
 SCRATCH=$(cd "$SCRATCH" && pwd -P)
 cleanup_all() { rm -rf "$SCRATCH"; }
