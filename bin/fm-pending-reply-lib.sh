@@ -82,7 +82,7 @@
 # tests. No side effects on source. set -u / set -e safe.
 #
 # Tunables (env):
-#   FM_PENDING_REPLY_GRACE_SECS   default 120
+#   FM_PENDING_REPLY_GRACE_SECS   default 300
 #   FM_PENDING_REPLY_DIR_OVERRIDE override the pending-replies directory (tests)
 #   FM_PENDING_REPLY_SEND_HOOK    optional command template for recovery delivery
 #                                 (tests); receives task_id and full message as args
@@ -101,7 +101,7 @@ _FM_PENDING_REPLY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/n
 
 FM_PENDING_REPLY_SCHEMA='fm-pending-reply.v1'
 FM_PENDING_REPLY_CORR_RE='corr=[A-Fa-f0-9]{16}'
-FM_PENDING_REPLY_GRACE_DEFAULT=120
+FM_PENDING_REPLY_GRACE_DEFAULT=300
 
 fm_pending_reply_now() {
   if [ -n "${FM_PENDING_REPLY_NOW:-}" ]; then
