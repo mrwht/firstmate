@@ -1,6 +1,6 @@
 # tmux runtime backend
 
-tmux is Firstmate's verified reference runtime backend and the fully supported baseline for secondmate homes.
+tmux is Firstmate's verified reference runtime backend.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared backend selection and metadata semantics.
 
 ## Setup
@@ -96,7 +96,7 @@ Without that baseline, an `unknown` verdict is preserved untouched, so a busy-lo
 
 ## Limits and regression entry points
 
-- tmux is the reference path and supports secondmate homes.
+- tmux is the reference path.
 - The OpenCode busy-queue exception is tmux-specific; Herdr retains its separately documented gap.
 
 ```sh

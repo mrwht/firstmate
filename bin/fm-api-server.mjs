@@ -543,7 +543,7 @@ async function handlePromote(body, res) {
 }
 
 async function handleSpawn(body, res) {
-  const { taskId, projectDir, secondmate, firstmateHome, harness, model, effort, backend, scout, mode, yolo } = body;
+  const { taskId, projectDir, harness, model, effort, backend, scout, mode, yolo } = body;
   if (!isSlug(taskId)) return sendJson(res, 400, { error: "taskId must be a slug" });
   if (harness !== undefined && !VERIFIED_HARNESSES.has(harness)) {
     return sendJson(res, 400, { error: `harness must be one of ${[...VERIFIED_HARNESSES].join(", ")}` });
@@ -557,10 +557,10 @@ async function handleSpawn(body, res) {
   if (backend !== undefined && !BACKEND_VALUES.has(backend)) {
     return sendJson(res, 400, { error: `backend must be one of ${[...BACKEND_VALUES].join(", ")}` });
   }
-  // A ship spawn (neither --secondmate nor --scout) requires --mode/--yolo,
-  // mirroring fm-spawn.sh's own explicit-only delivery contract (AGENTS.md
-  // section 7); a scout or secondmate spawn never carries either.
-  if (!secondmate && !scout) {
+  // A ship spawn (not --scout) requires --mode/--yolo, mirroring
+  // fm-spawn.sh's own explicit-only delivery contract (AGENTS.md section 7);
+  // a scout spawn never carries either.
+  if (!scout) {
     if (!MODE_VALUES.has(mode)) {
       return sendJson(res, 400, { error: `mode must be one of ${[...MODE_VALUES].join(", ")}` });
     }
@@ -569,26 +569,15 @@ async function handleSpawn(body, res) {
     }
   }
 
-  const args = [taskId];
-  if (secondmate) {
-    if (firstmateHome !== undefined) {
-      if (!isSafePathLike(firstmateHome)) {
-        return sendJson(res, 400, { error: "firstmateHome must be a safe path" });
-      }
-      args.push(firstmateHome);
-    }
-  } else {
-    if (!isSafePathLike(projectDir)) {
-      return sendJson(res, 400, { error: "projectDir must be a safe path" });
-    }
-    args.push(projectDir);
+  if (!isSafePathLike(projectDir)) {
+    return sendJson(res, 400, { error: "projectDir must be a safe path" });
   }
+  const args = [taskId, projectDir];
   if (harness !== undefined) args.push("--harness", harness);
   if (model !== undefined) args.push("--model", model);
   if (effort !== undefined) args.push("--effort", effort);
   if (backend !== undefined) args.push("--backend", backend);
-  if (secondmate) args.push("--secondmate");
-  else if (scout) args.push("--scout");
+  if (scout) args.push("--scout");
   else args.push("--mode", mode, "--yolo", yolo);
 
   const result = await runScript("fm-spawn.sh", args, { timeoutMs: 180000 });

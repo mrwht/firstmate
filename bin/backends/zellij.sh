@@ -21,9 +21,9 @@
 # mirrors herdr's target-string convention).
 #
 # Home-scoped tab titles (closes a cross-home collision gap): because every
-# task in every firstmate home - primary or secondmate - shares this ONE
-# session's tab bar with no per-home split, and zellij enforces no tab-name
-# uniqueness at all, two firstmate homes whose task ids happen to collide
+# task in every firstmate home shares this ONE session's tab bar with no
+# per-home split, and zellij enforces no tab-name uniqueness at all, two
+# firstmate homes whose task ids happen to collide
 # could send/peek/close each other's tabs. This is the exact gap a
 # captain-directed no-mistakes review gate caught for the cmux backend
 # (docs/cmux-backend.md) and this same tag mechanism (bin/backends/cmux.sh's

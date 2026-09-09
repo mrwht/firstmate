@@ -115,7 +115,6 @@ Real tests share the captain's running app rather than creating an isolated cmux
 
 - cmux is experimental, macOS-only, GUI-first, and requires the app running.
 - Socket access requires a one-time manual Settings change.
-- Secondmate spawns are unsupported until a per-home lifecycle design is verified.
 - There is no native busy or push-event signal.
 - A target can disappear after structural readiness and before the operation.
 - The only-workspace cleanup path leaves a fresh default workspace and cannot close the window.

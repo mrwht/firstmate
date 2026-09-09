@@ -92,6 +92,9 @@ fm_tasks_axi_update_has_archive_body() {
   printf '%s\n' "$output" | grep -F -- '--archive-body' >/dev/null
 }
 
+# Still required: bin/fm-backlog-receive.sh's atomic dependency-closed backlog
+# receipt calls `tasks-axi mv "$@"` with a variable-length id list and depends
+# on this probe through fm_tasks_axi_compatible.
 fm_tasks_axi_mv_has_multi_id() {
   local output
   command -v tasks-axi >/dev/null 2>&1 || return 1

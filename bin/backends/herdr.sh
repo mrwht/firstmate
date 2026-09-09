@@ -128,10 +128,6 @@ FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX=".herdr-presentation-floor-"
 # ->blocked edge and a reconnect level-reconcile never re-delivers a still-
 # blocked pane. Mirrors bin/fm-watch.sh's .stale-<key> naming.
 FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
-# .fm-secondmate-home is written by bin/fm-home-seed.sh (AGENTS.md section 6)
-# at a seeded secondmate home's root, containing exactly that secondmate's id.
-# The primary firstmate home never carries this marker.
-FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 # The presentation projection is intentionally separate from the authoritative
 # task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
@@ -338,27 +334,10 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
 }
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
-# label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
-# secondmate marker) resolves to the constant "firstmate", byte-identical to
-# every pre-existing task's recorded label - no forced migration. A SECONDMATE
-# home resolves to "2ndmate-<secondmate-id>", so its tasks land in their own
-# workspace, obviously distinguishable from the primary's (and from every
-# other secondmate's) in herdr's spaces sidebar. Read fresh from FM_HOME on
-# every call rather than cached at source time: FM_HOME is the home's own
-# durable identity, not env plumbing threaded through a call chain, so the
-# label is automatically stable across every respawn/recovery for the life of
-# that home. fm-spawn.sh briefly shadows FM_HOME to a secondmate's own home
-# when the PRIMARY spawns that secondmate (its own process's FM_HOME still
-# names the primary at that point) - see fm-spawn.sh's herdr case arm.
+# label (docs/herdr-backend.md "Default task container shape"). Resolves to
+# the constant "firstmate", byte-identical to every pre-existing task's
+# recorded label - no forced migration.
 fm_backend_herdr_workspace_label() {
-  local marker="$FM_HOME/$FM_BACKEND_HERDR_SECONDMATE_MARKER" id
-  if [ -f "$marker" ]; then
-    id=$(tr -d '[:space:]' < "$marker" 2>/dev/null)
-    if [ -n "$id" ]; then
-      printf '2ndmate-%s' "$id"
-      return 0
-    fi
-  fi
   printf 'firstmate'
 }
 
@@ -1736,9 +1715,6 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
 #                   land in that exact workspace
 #                   (fm_backend_herdr_launcher_identity), never in whichever
 #                   same-labeled workspace happens to sort first.
-#   other-home    - a --secondmate launch, which stands up a DIFFERENT home's
-#                   own per-home workspace by design. The launcher's workspace
-#                   is deliberately not inherited here.
 # With no herdr ancestry at all there is no launcher workspace to inherit, so
 # the per-home label lookup below stays the resolver - but it must then resolve
 # to exactly ONE workspace. Two same-labeled home workspaces with no launcher
@@ -3105,12 +3081,9 @@ EOF
 # HOME'S OWN workspace (fm_backend_herdr_workspace_label - never another
 # home's), by LABEL - never by trusting a stored pane id, since ids are not
 # guaranteed stable across every server lifecycle (see herdr-verification-p2.md
-# "ID stability"). A caller running as a given home (e.g. a secondmate
-# recovering its own in-flight work) naturally scopes to that home's own
-# workspace because FM_HOME already names it - no glue needed, unlike the
-# primary-spawns-a-secondmate path in fm-spawn.sh. Read-only: a session/
-# workspace that does not exist yet simply lists nothing. One
-# "<session>:<pane_id>\t<label>" line per live task tab.
+# "ID stability"). Read-only: a session/workspace that does not exist yet
+# simply lists nothing. One "<session>:<pane_id>\t<label>" line per live task
+# tab.
 fm_backend_herdr_list_live() {  # <session>
   local session=$1 wsid tabs tab_id label pane_id
   wsid=$(fm_backend_herdr_workspace_find "$session") || return 0
