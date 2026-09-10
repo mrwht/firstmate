@@ -30,7 +30,7 @@
 #       worth looking at, 1 otherwise. Safe to call unconditionally.
 #
 #   fm-public-followup.sh register <obligation-id> --relation <relation-id>
-#         --work-home <main|secondmate:<id>> --work-id <task-id> --generation <n>
+#         --work-home <main> --work-id <task-id> --generation <n>
 #         [--platform <x|discord>] [--request <request-id>]
 #       Record the binding the relay path just created with `tasks-axi
 #       public-followup add` + `bind-work`. This is the event-driven
@@ -99,12 +99,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
-# shellcheck source=bin/fm-secondmate-registry-lib.sh
-. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 RETRY_BACKOFF=${FM_PF_RETRY_BACKOFF_SECS:-900}
 case "$RETRY_BACKOFF" in ''|*[!0-9]*) RETRY_BACKOFF=900 ;; esac
@@ -208,8 +205,11 @@ cmd_register() {
   fm_pf_slug_valid "$id"       || die "unsafe obligation id: $id"
   fm_pf_slug_valid "$relation" || die "unsafe relation id: $relation"
   fm_pf_slug_valid "$work_id"  || die "unsafe work id: $work_id"
-  fm_pf_home_id_valid "$work_home" \
-    || die "work home must be 'main' or 'secondmate:<stable-id>', got '$work_home'"
+  # This registration boundary only ever produces "main": fm_pf_home_id_valid
+  # also accepts "secondmate:<id>" for bin/fm-teardown.sh's own marked-secondmate
+  # cleanup guard (see fm-public-followup-lib.sh), which is out of scope here.
+  [ "$work_home" = main ] \
+    || die "work home must be 'main', got '$work_home'"
   case "$generation" in
     ''|*[!0-9]*) die "generation must be a positive integer, got '$generation'" ;;
   esac
@@ -512,26 +512,9 @@ public_followup_registration_valid() {
   work_id=$(fm_pf_registry_get "$STATE" "$id" work_id)
   generation=$(fm_pf_registry_get "$STATE" "$id" generation)
   [ -n "$relation" ] && [ -n "$work_id" ] || return 1
-  fm_pf_home_id_valid "$work_home" || return 1
+  [ "$work_home" = main ] || return 1
   fm_pf_slug_valid "$work_id" || return 1
   case "$generation" in ''|*[!0-9]*) return 1 ;; esac
-}
-
-public_followup_secondmate_home() {
-  local id=$1 meta home marker
-  fm_pf_home_id_valid "secondmate:$id" || return 1
-  meta="$STATE/$id.meta"
-  home=$(fmx_meta_get "$meta" home)
-  if [ -z "$home" ] && [ -f "$DATA/secondmates.md" ] && [ ! -L "$DATA/secondmates.md" ]; then
-    home=$(secondmate_registry_field "$DATA/secondmates.md" "$id" home || true)
-  fi
-  [ -n "$home" ] || return 1
-  case "$home" in /*) ;; *) return 1 ;; esac
-  home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
-  [ -f "$home/.fm-secondmate-home" ] && [ ! -L "$home/.fm-secondmate-home" ] || return 1
-  marker=$(sed -n '1p' "$home/.fm-secondmate-home" 2>/dev/null)
-  [ "$marker" = "$id" ] || return 1
-  printf '%s\n' "$home"
 }
 
 clear_public_followup_link() {
@@ -544,10 +527,6 @@ clear_public_followup_link() {
     main)
       home=$FM_HOME
       state=$STATE
-      ;;
-    secondmate:*)
-      home=$(public_followup_secondmate_home "${work_home#secondmate:}") || return 1
-      state="$home/state"
       ;;
     *) return 1 ;;
   esac
@@ -576,7 +555,6 @@ public_followup_legacy_link_status() {
     [ -n "$work_home" ] && [ -n "$work_id" ] || return 2
     case "$work_home" in
       main) home=$FM_HOME ;;
-      secondmate:*) home=$(public_followup_secondmate_home "${work_home#secondmate:}") || return 2 ;;
       *) return 2 ;;
     esac
     meta="$home/state/$work_id.meta"

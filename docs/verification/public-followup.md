@@ -12,7 +12,7 @@ Task chronology and delivery evidence stay outside this record.
 
 ## Environment
 
-Recorded 2026-07-30 on Darwin 25.5.0 (arm64) with GNU bash 5.3.9, tasks-axi 0.2.3, jq 1.8.1, and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
+Recorded 2026-09-10 on Darwin 25.6.0 (arm64) with GNU bash 5.3.9, tasks-axi 0.2.5, jq 1.8.1, and ShellCheck 0.11.0 (the version `bin/fm-lint.sh` pins).
 The relay is a fakebin `curl` in every case, so no public post is ever made; `tasks-axi` and `jq` are the real tools, because stubbing the obligation state machine would verify nothing.
 
 ## Restart end-to-end and regressions
@@ -25,11 +25,27 @@ bash tests/fm-public-followup.test.sh
 ok - outcome text is collapsed to one line, bounded by codepoint, and never corrupts characters
 ok - restart end-to-end: typed result reconciles from disk and delivers one reply to the original thread
 ok - duplicate terminal results, restart replay, and repeated delivery are all no-ops
-ok - wrong source, wrong work id, stale generation, malformed, unsupported deliverable, and forged identity are all refused
+ok - a secondmate:<id> source home, wrong work id, stale generation, malformed, unsupported deliverable, and forged identity are all refused
 ok - a relay transport failure is held as retryable with no false completion, and the retry posts once
+ok - a dry-run records no public delivery and leaves the commitment retryable
 ok - a late success receipt closes the exact attempt with no second post, and a mismatched attempt is refused
+ok - typed terminal cleanup clears the legacy link without posting
 ok - a delivery interrupted between post and receipt refuses to repost
-ok - a child home reports typed results but can never become the outward-post owner
+ok - the secondmate:<id> work-home addressing variant is a plain parse error, not a silent special case
+ok - typed delivery refuses to post when its cleanup registration is missing
+ok - marked secondmate teardown resolves its parent and fails closed when unavailable
+ok - local seeding publishes durable parent state before its identity marker
+ok - a lost launch-time parent binding is recovered from the durable local record
+ok - a durable local parent record does not bypass a genuinely missing parent-side registration
+ok - unknown durable parent fields remain forward-compatible
+ok - conflicting live and durable parent bindings fail closed
+ok - unsafe durable parent records fail closed before cleanup
+ok - a NUL-bearing durable parent record fails closed before cleanup
+ok - relay-disabled unmarked teardown runs no public-followup work
+ok - a marked child proceeds without tasks-axi when its parent relay is disabled
+ok - secondmate parent resolution matches the durable registry id literally
+ok - traversal-shaped registrations are rejected before path construction or posting
+ok - pending keeps registrations when tasks-axi returns malformed JSON
 ok - the retained private request context keeps the original thread deliverable after inbox cleanup
 ok - cleanup refuses while a public reply is owed and proceeds once it has landed
 ok - a relay-disabled home runs no tasks-axi call, prints nothing, and gains no artifact
@@ -41,7 +57,9 @@ ok - typed public-followup records carry only public-safe summaries and delivera
 ```
 
 The first case is the end-to-end proof.
-It reproduces the stranded state first (work bound, no reconciled terminal result, delivery refused with "still waiting on its bound work" and zero posts), then has a secondmate-shaped child report a typed `pr-merged` result, deletes the drained inbox payload, reconciles from disk, and asserts exactly one `connector/followup` call carrying the original `request_id`, a validated `posted` receipt, and a Done obligation.
+It reproduces the stranded state first (work bound, no reconciled terminal result, delivery refused with "still waiting on its bound work" and zero posts), then reports a typed `pr-merged` result against a `main`-addressed work binding, deletes the drained inbox payload, reconciles from disk, and asserts exactly one `connector/followup` call carrying the original `request_id`, a validated `posted` receipt, and a Done obligation.
+`register` and `--source-home`/`--work-home` now accept only `main`; the retired `secondmate:<id>` work-home addressing variant is refused as an ordinary invalid-shape parse error rather than silently accepted or special-cased (`fm-public-followup.sh`, `fm-public-followup-emit.sh`).
+The shared `fm_pf_home_id_valid` shape check in `fm-public-followup-lib.sh` still accepts `secondmate:<id>` because `bin/fm-teardown.sh`'s own marked-secondmate cleanup guard still constructs and validates that shape; the tests above that still reference `secondmate:<id>` (parent resolution, teardown refusal ordering, marked-child reporting) exercise that separate, still-live teardown path, not the retired addressing variant.
 
 The existing Relay suite is unchanged by this work:
 

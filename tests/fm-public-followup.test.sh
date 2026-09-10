@@ -145,9 +145,25 @@ seed_commitment() {
     ". '$ROOT/bin/fm-x-lib.sh'; fmx_context_registry_set '$home/state' '$request' '$platform' 1900" \
     || fail "could not retain the private request context"
 
-  run_pf "$home" register "$obligation" --relation rel-code \
-    --work-home "$work_home" --work-id "$work_id" --generation 1 >/dev/null \
-    || fail "could not register the public commitment"
+  if [ "$work_home" = main ]; then
+    run_pf "$home" register "$obligation" --relation rel-code \
+      --work-home "$work_home" --work-id "$work_id" --generation 1 >/dev/null \
+      || fail "could not register the public commitment"
+  else
+    # fm-public-followup.sh register only accepts "main" now: the
+    # secondmate:<id> addressing variant it used to accept is gone. A few
+    # fixtures below still need a registry record shaped like a
+    # secondmate-addressed commitment to exercise fm-teardown.sh's own
+    # still-live marked-secondmate cleanup guard (unrelated to this stripped
+    # addressing variant and owned by a separate task), so write that record
+    # directly instead of going through the now-narrower register command.
+    mkdir -p "$home/state/public-followup/registry"
+    chmod 700 "$home/state/public-followup" "$home/state/public-followup/registry"
+    printf 'obligation_id=%s\nrelation_id=rel-code\nwork_home=%s\nwork_id=%s\ngeneration=1\nplatform=%s\nrequest_id=%s\n' \
+      "$obligation" "$work_home" "$work_id" "$platform" "$request" \
+      > "$home/state/public-followup/registry/$obligation"
+    chmod 600 "$home/state/public-followup/registry/$obligation"
+  fi
 }
 
 emit_terminal() {  # <child-run-dir> <owning-home> <obligation> <work-home> <work-id> [pr-url] [outcome]
@@ -231,19 +247,16 @@ test_outcome_text_is_bounded_without_corrupting_characters() {
 # --- 1. the restart end-to-end -------------------------------------------------
 
 # The whole reported failure, start to finish, with no conversation memory
-# anywhere: a Discord request becomes a typed commitment, a secondmate child
-# lands the work and reports a TYPED terminal result, the session ends, and a
-# cold reconciliation from disk delivers exactly one final reply into the
-# original thread and closes the obligation.
+# anywhere: a Discord request becomes a typed commitment, the work lands and
+# reports a TYPED terminal result, the session ends, and a cold reconciliation
+# from disk delivers exactly one final reply into the original thread and
+# closes the obligation.
 test_restart_e2e_delivers_exactly_once() {
-  local home child log out posts receipt
+  local home log out posts receipt
   home=$(make_home restart-e2e)
-  child=$(make_home restart-child relay-off)
   log="$home/curl.log"; : > "$log"
-  seed_commitment "$home" pf-restart req-restart discord secondmate:fmdev work-code-q1
-  printf '%s\n' fmdev > "$child/.fm-secondmate-home"
-  fm_write_meta "$home/state/fmdev.meta" "kind=secondmate" "home=$child"
-  fm_write_meta "$child/state/work-code-q1.meta" \
+  seed_commitment "$home" pf-restart req-restart discord main work-code-q1
+  fm_write_meta "$home/state/work-code-q1.meta" \
     "x_request=req-restart" "x_request_ts=1700000000" "x_followups=1"
 
   # The reported failure, reproduced: with the work bound but no reconciled
@@ -257,10 +270,10 @@ test_restart_e2e_delivers_exactly_once() {
     "the stranded state must be reported, not silently skipped"
   [ "$(followup_posts "$log")" -eq 0 ] || fail "the stranded state must post nothing"
 
-  # The child home reports its terminal result as typed data. This is the step
+  # The work reports its terminal result as typed data. This is the step
   # whose absence left the obligation stranded at pending-work.
-  emit_terminal "$home" "$home" pf-restart secondmate:fmdev work-code-q1 >/dev/null \
-    || fail "the child could not report its typed terminal result"
+  emit_terminal "$home" "$home" pf-restart main work-code-q1 >/dev/null \
+    || fail "the work could not report its typed terminal result"
 
   # Simulate compaction/restart: nothing but disk survives, and the drained inbox
   # is gone. The durable private request context is what keeps the thread binding
@@ -295,8 +308,8 @@ test_restart_e2e_delivers_exactly_once() {
   [ "$receipt" = posted ] || fail "a validated posted receipt must be recorded, got '$receipt'"
   [ "$(task_state "$home" pf-restart)" = 'done' ] \
     || fail "the commitment must be Done only after the receipt"
-  assert_no_grep '^x_request=' "$child/state/work-code-q1.meta" \
-    "typed delivery must clear the secondmate's legacy X link"
+  assert_no_grep '^x_request=' "$home/state/work-code-q1.meta" \
+    "typed delivery must clear the legacy X link"
   pass "restart end-to-end: typed result reconciles from disk and delivers one reply to the original thread"
 }
 
@@ -339,26 +352,31 @@ test_duplicate_event_and_replay_are_noops() {
 test_invalid_events_are_refused_and_quarantined() {
   local home out events rejected
   home=$(make_home refusals)
-  seed_commitment "$home" pf-refuse req-refuse discord secondmate:fmdev work-real
+  seed_commitment "$home" pf-refuse req-refuse discord main work-real
 
-  # Wrong source home and wrong work id are caught at the edge by the emitter,
-  # because the owning home's own registration disagrees.
-  expect_failure "a wrong source home must be refused" \
+  # The removed secondmate:<id> source-home addressing variant is refused as a
+  # plain invalid shape, exactly like any other malformed argument.
+  expect_failure "a secondmate:<id> source home must be refused as an invalid shape" \
     "$EMIT" --home "$home" --obligation pf-refuse --relation rel-code \
-    --source-home secondmate:other --work-id work-real --generation 1 \
+    --source-home secondmate:fmdev --work-id work-real --generation 1 \
+    --outcome pr-merged --deliverable pr_url=https://example.invalid/1 \
+    --outcome-text 'x'
+  assert_contains "$EXPECT_OUT" "source home must be 'main'" \
+    "the refusal must name the unsupported shape"
+
+  # A wrong work id is caught at the edge by the emitter, because the owning
+  # home's own registration disagrees.
+  expect_failure "a wrong work id must be refused" \
+    "$EMIT" --home "$home" --obligation pf-refuse --relation rel-code \
+    --source-home main --work-id work-other --generation 1 \
     --outcome pr-merged --deliverable pr_url=https://example.invalid/1 \
     --outcome-text 'x'
   assert_contains "$EXPECT_OUT" "does not match this home's registration" \
     "the refusal must name the mismatch"
 
-  expect_failure "a wrong work id must be refused" \
-    "$EMIT" --home "$home" --obligation pf-refuse --relation rel-code \
-    --source-home secondmate:fmdev --work-id work-other --generation 1 \
-    --outcome pr-merged --deliverable pr_url=https://example.invalid/1 \
-    --outcome-text 'x'
   expect_failure "a stale generation must be refused" \
     "$EMIT" --home "$home" --obligation pf-refuse --relation rel-code \
-    --source-home secondmate:fmdev --work-id work-real --generation 0 \
+    --source-home main --work-id work-real --generation 0 \
     --outcome pr-merged --deliverable pr_url=https://example.invalid/1 \
     --outcome-text 'x'
 
@@ -375,7 +393,7 @@ test_invalid_events_are_refused_and_quarantined() {
   # A deliverable the expected-final type does not permit. The emitter accepts the
   # shape; tasks-axi is the authority that refuses the semantics.
   "$EMIT" --home "$home" --obligation pf-refuse --relation rel-code \
-    --source-home secondmate:fmdev --work-id work-real --generation 1 \
+    --source-home main --work-id work-real --generation 1 \
     --outcome pr-merged --deliverable report_path=data/x/report.md \
     --outcome-text 'wrong deliverable for a merged PR' >/dev/null \
     || fail "the emitter should publish a shape-valid event"
@@ -387,13 +405,13 @@ test_invalid_events_are_refused_and_quarantined() {
   # A hand-edited event whose id no longer matches its own identity fields.
   jq -n '{schema_version:1, event_id:"forged", obligation_id:"pf-refuse",
           relation_id:"rel-code", work_id:"work-real", generation:1,
-          source_home_id:"secondmate:fmdev", outcome_type:"pr-merged",
+          source_home_id:"main", outcome_type:"pr-merged",
           deliverables:{pr_url:"https://example.invalid/9"},
           public_safe_outcome:"forged", occurred_at:"2026-07-30T12:00:00Z",
           successor:null}' > "$events/forged.json"
   out=$(run_pf "$home" consume) || fail "consume must survive a forged event"
   assert_contains "$out" "rejected forged" "a forged event identity must be refused"
-  pass "wrong source, wrong work id, stale generation, malformed, unsupported deliverable, and forged identity are all refused"
+  pass "a secondmate:<id> source home, wrong work id, stale generation, malformed, unsupported deliverable, and forged identity are all refused"
 }
 
 # --- 4. transport failure and late receipt -------------------------------------
@@ -524,41 +542,43 @@ test_interrupted_delivery_refuses_to_repost() {
   pass "a delivery interrupted between post and receipt refuses to repost"
 }
 
-# --- 5. ownership --------------------------------------------------------------
+# --- 5. addressing shape --------------------------------------------------------
 
-# The outward post belongs to the home holding the relay consent and the thread
-# binding. A child home has neither, and must not be able to acquire them.
-test_outward_delivery_stays_with_the_owning_home() {
-  local owner child log out
-  owner=$(make_home owner)
-  child=$(make_home child relay-off)
-  log="$owner/curl.log"; : > "$log"
-  seed_commitment "$owner" pf-own req-own discord secondmate:child work-child
-  printf '%s\n' child > "$child/.fm-secondmate-home"
-  fm_write_meta "$owner/state/child.meta" "kind=secondmate" "home=$child"
-  fm_write_meta "$child/state/work-child.meta" \
-    "x_request=req-own" "x_request_ts=1700000000" "x_followups=1"
+# The register/emit boundary only ever produces "main" now: the retired
+# secondmate:<id> work-home addressing variant must be refused as a plain
+# invalid shape, exactly like any other malformed value, never silently
+# ignored or special-cased.
+test_secondmate_home_addressing_is_rejected_as_invalid_shape() {
+  local home
+  home=$(make_home secondmate-shape)
+  jq -n --arg r req-shape --arg p discord \
+    '{request_id:$r, platform:$p,
+      context_binding:{version:"ctx1", value:("ctx1_" + $r)},
+      public_safe_summary:"x", received_at:"2026-07-30T10:00:00Z",
+      followup_expires_at:"2026-08-06T10:00:00Z",
+      reservation_expires_at:"2026-08-06T10:00:00Z"}' > "$home/request.json"
+  jq -n '{type:"pr-merged", project:"firstmate",
+          required_deliverables:["pr_url"], completion_policy:"all-required"}' \
+    > "$home/expected.json"
+  jq -n --arg h "secondmate:child" --arg w work-child \
+    '{relation_id:"rel-code", work_ref:{home_id:$h, task_id:$w},
+      role:"fulfills", required:true, generation:1}' > "$home/relation.json"
+  tasks_in "$home" public-followup add pf-shape \
+    --request-context-file "$home/request.json" --purpose promised-final \
+    --expected-final-file "$home/expected.json" --expires-at 2026-10-01T00:00:00Z >/dev/null \
+    || fail "could not create the public commitment"
+  tasks_in "$home" public-followup bind-work pf-shape \
+    --relation-file "$home/relation.json" >/dev/null \
+    || fail "could not bind work to the public commitment"
 
-  FAKE_CURL_LOG="$log" emit_terminal "$owner" "$owner" pf-own secondmate:child work-child >/dev/null \
-    || fail "the child could not report its typed result"
-  [ "$(followup_posts "$log")" -eq 0 ] \
-    || fail "reporting a terminal result must never post publicly"
-  run_pf "$owner" consume >/dev/null || fail "the owning home could not consume the child's typed result"
-
-  # The child home has no commitment of its own and no relay consent, so it can
-  # neither deliver nor even see one.
-  PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
-    FM_STATE_OVERRIDE="$child/state" FAKE_CURL_LOG="$log" \
-    expect_failure "a home without relay consent must not deliver a public reply" \
-    "$PF" deliver pf-own
-  assert_contains "$EXPECT_OUT" "has not opted into the myfirstmate relay" \
-    "the refusal must name the missing relay consent"
-  [ "$(followup_posts "$log")" -eq 0 ] || fail "the refused delivery must post nothing"
-  FAKE_CURL_LOG="$log" run_pf "$owner" deliver pf-own >/dev/null \
-    || fail "the owning home must deliver the typed public reply"
-  assert_no_grep '^x_request=' "$child/state/work-child.meta" \
-    "typed delivery must clear the child task's legacy X link"
-  pass "a child home reports typed results but can never become the outward-post owner"
+  expect_failure "a secondmate:<id> work-home must be refused, not silently accepted" \
+    run_pf "$home" register pf-shape --relation rel-code \
+    --work-home secondmate:child --work-id work-child --generation 1
+  assert_contains "$EXPECT_OUT" "work home must be 'main'" \
+    "the refusal must name the unsupported shape, like any other invalid value"
+  assert_absent "$home/state/public-followup/registry/pf-shape" \
+    "a refused registration must create no registry record"
+  pass "the secondmate:<id> work-home addressing variant is a plain parse error, not a silent special case"
 }
 
 test_delivery_requires_registration_before_posting() {
@@ -1332,7 +1352,7 @@ test_dry_run_does_not_close_commitment
 test_late_receipt_closes_the_exact_attempt_without_reposting
 test_typed_terminal_clear_only_removes_legacy_link
 test_interrupted_delivery_refuses_to_repost
-test_outward_delivery_stays_with_the_owning_home
+test_secondmate_home_addressing_is_rejected_as_invalid_shape
 test_delivery_requires_registration_before_posting
 test_secondmate_teardown_requires_parent_binding
 test_local_secondmate_seed_publishes_parent_before_identity

@@ -15,7 +15,7 @@
 # Usage:
 #   fm-public-followup-emit.sh --home <owning-home> \
 #     --obligation <obligation-id> --relation <relation-id> \
-#     --source-home <main|secondmate:<id>> --work-id <task-id> \
+#     --source-home <main> --work-id <task-id> \
 #     --generation <n> --outcome <outcome-type> \
 #     [--deliverable <key>=<value>]... \
 #     (--outcome-text <text> | --outcome-text-file <path> | --outcome-text -)
@@ -28,7 +28,7 @@
 #   --obligation <id>      tasks-axi public-followup obligation id.
 #   --relation <id>        The relation_id this work fulfills or contributes to.
 #   --source-home <id>     This worker's stable home identity, exactly as bound:
-#                          "main" or "secondmate:<stable-id>".
+#                          "main".
 #   --work-id <id>         This worker's exact task id, exactly as bound.
 #   --generation <n>       The bound relation generation (integer >= 1).
 #   --outcome <type>       Typed outcome. tasks-axi owns the vocabulary and
@@ -65,7 +65,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat >&2 <<'EOF'
 usage: fm-public-followup-emit.sh --home <owning-home> --obligation <id> --relation <id>
-         --source-home <main|secondmate:<id>> --work-id <id> --generation <n>
+         --source-home <main> --work-id <id> --generation <n>
          --outcome <type> [--deliverable <key>=<value>]...
          (--outcome-text <text> | --outcome-text-file <path> | --outcome-text -)
 EOF
@@ -134,8 +134,11 @@ fm_pf_slug_valid "$OBLIGATION" || die "unsafe obligation id: $OBLIGATION"
 fm_pf_slug_valid "$RELATION"   || die "unsafe relation id: $RELATION"
 fm_pf_slug_valid "$WORK_ID"    || die "unsafe work id: $WORK_ID"
 fm_pf_slug_valid "$OUTCOME"    || die "unsafe outcome type: $OUTCOME"
-fm_pf_home_id_valid "$SOURCE_HOME" \
-  || die "source home must be 'main' or 'secondmate:<stable-id>', got '$SOURCE_HOME'"
+# This reporting boundary only ever produces "main": fm_pf_home_id_valid also
+# accepts "secondmate:<id>" for bin/fm-teardown.sh's own marked-secondmate
+# cleanup guard (see fm-public-followup-lib.sh), which is out of scope here.
+[ "$SOURCE_HOME" = main ] \
+  || die "source home must be 'main', got '$SOURCE_HOME'"
 case "$GENERATION" in
   ''|*[!0-9]*) die "generation must be a positive integer, got '$GENERATION'" ;;
 esac
