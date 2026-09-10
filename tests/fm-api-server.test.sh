@@ -183,7 +183,7 @@ test_auth_required_on_protected_route() {
 test_snapshot_returns_real_schema() {
   http_req GET /v1/snapshot "$TOKEN"
   expect_code 200 "$LAST_CODE" "snapshot"
-  assert_contains "$LAST_BODY" '"schema":"fm-fleet-snapshot.v1"' "snapshot schema field"
+  assert_contains "$LAST_BODY" '"schema":"fm-fleet-snapshot.v2"' "snapshot schema field"
   pass "fm-api-server: GET /v1/snapshot returns the real fm-fleet-snapshot.sh --json schema"
 }
 
@@ -257,7 +257,7 @@ test_snapshot_cold_start_single_flight() {
   b1=$(cat "$out1"); b2=$(cat "$out2"); b3=$(cat "$out3")
   rm -f "$out1" "$out2" "$out3"
 
-  assert_contains "$b1" '"schema":"fm-fleet-snapshot.v1"' "cold-start request got the real snapshot, not a placeholder"
+  assert_contains "$b1" '"schema":"fm-fleet-snapshot.v2"' "cold-start request got the real snapshot, not a placeholder"
   [ "$b1" = "$b2" ] && [ "$b2" = "$b3" ] || fail "concurrent cold-start requests returned different bodies"
   [ "$max_seen" -le 1 ] \
     || fail "expected at most 1 concurrent warm-up subprocess during cold start, saw $max_seen"
