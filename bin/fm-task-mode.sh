@@ -7,9 +7,7 @@
 #
 # Override file: config/task-mode.<id>, one line, grammar "<mode> [+yolo]"
 # using the exact same mode/yolo vocabulary fm-project-mode.sh parses
-# (no-mistakes|direct-PR|local-only, optional +yolo). This mirrors the
-# config/secondmate-harness precedent's per-id-then-global fallback shape
-# (docs/configuration.md "Harness support").
+# (no-mistakes|direct-PR|local-only, optional +yolo).
 #
 # <id> is sanitized against [A-Za-z0-9_-]+ before being interpolated into a
 # filename; an id containing any other character (e.g. "/" or "..") is

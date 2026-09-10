@@ -30,7 +30,7 @@ bin/fm-api-server.sh status              # now also reports whether the agent is
 bin/fm-api-server.sh uninstall-launchd   # unregister it
 ```
 
-The agent's label and plist file (under `~/Library/LaunchAgents`) are derived from a hash of this `FM_HOME`'s resolved path, so a secondmate home gets its own independent agent without colliding with the primary's.
+The agent's label and plist file (under `~/Library/LaunchAgents`) are derived from a hash of this `FM_HOME`'s resolved path, so a second home gets its own independent agent without colliding with the primary's.
 Re-running `install-launchd` replaces the previously installed agent, so it is safe to repeat after changing `FM_HOME`, the config, or the Node.js install it resolves at install time; if a background instance started with `start` is still running, `install-launchd` stops it first so the launchd agent never collides with it on the same port.
 
 `KeepAlive` only restarts the server on a non-clean exit (a crash, `kill -9`, or a startup config refusal such as a missing `config/api-token`); a deliberate `bin/fm-api-server.sh stop` sends `SIGTERM`, which the server treats as a clean shutdown, so launchd leaves it stopped until the next login or reboot brings it back via `RunAtLoad`.
