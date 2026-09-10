@@ -128,6 +128,10 @@ FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX=".herdr-presentation-floor-"
 # ->blocked edge and a reconnect level-reconcile never re-delivers a still-
 # blocked pane. Mirrors bin/fm-watch.sh's .stale-<key> naming.
 FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
+# .fm-secondmate-home is written by bin/fm-home-seed.sh (AGENTS.md section 6)
+# at a seeded secondmate home's root, containing exactly that secondmate's id.
+# The primary firstmate home never carries this marker.
+FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 # The presentation projection is intentionally separate from the authoritative
 # task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
@@ -334,10 +338,27 @@ fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
 }
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
-# label (docs/herdr-backend.md "Default task container shape"). Resolves to
-# the constant "firstmate", byte-identical to every pre-existing task's
-# recorded label - no forced migration.
+# label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
+# secondmate marker) resolves to the constant "firstmate", byte-identical to
+# every pre-existing task's recorded label - no forced migration. A SECONDMATE
+# home resolves to "2ndmate-<secondmate-id>", so its tasks land in their own
+# workspace, obviously distinguishable from the primary's (and from every
+# other secondmate's) in herdr's spaces sidebar. Read fresh from FM_HOME on
+# every call rather than cached at source time: FM_HOME is the home's own
+# durable identity, not env plumbing threaded through a call chain, so the
+# label is automatically stable across every respawn/recovery for the life of
+# that home. fm-spawn.sh briefly shadows FM_HOME to a secondmate's own home
+# when the PRIMARY spawns that secondmate (its own process's FM_HOME still
+# names the primary at that point) - see fm-spawn.sh's herdr case arm.
 fm_backend_herdr_workspace_label() {
+  local marker="$FM_HOME/$FM_BACKEND_HERDR_SECONDMATE_MARKER" id
+  if [ -f "$marker" ]; then
+    id=$(tr -d '[:space:]' < "$marker" 2>/dev/null)
+    if [ -n "$id" ]; then
+      printf '2ndmate-%s' "$id"
+      return 0
+    fi
+  fi
   printf 'firstmate'
 }
 
