@@ -1006,23 +1006,25 @@ test_no_run_idle_pane_custom_paused_verb() {
 
 # A trailing keyed resolved: event is a decision-CLOSING event, not a run-state
 # verb. It must never become the current state or leak its resolution prose as the
-# detail: a healthy idle secondmate that just closed a keyed decision falls through
-# to the idle default (unknown/none), not `unknown` with the resolution note as its
-# `doing`. Regression for the bearings render bug where such a secondmate showed
-# state=unknown with resolution prose. The one-owner keyed fold in fm-classify-lib.sh
-# is untouched; this only stops the deriver from reading a non-state event as state.
-test_no_run_idle_secondmate_resolved_event_not_state() {
+# detail: a healthy idle crew that just closed a keyed decision falls through to
+# the idle default (unknown/none), not `unknown` with the resolution note as its
+# `doing`. Regression for the bearings render bug where a resolved-then-idle
+# task showed state=unknown with resolution prose. The one-owner keyed fold in
+# fm-classify-lib.sh is untouched; this only stops the deriver from reading a
+# non-state event as state.
+test_no_run_idle_resolved_event_not_state() {
   reset_fakes
   local d; d=$(new_case resolved-idle)
   mkdir -p "$d/wt"
   make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/mate.meta" "window=fm:fm-mate" "worktree=$d/wt" "kind=secondmate" "home=$d/wt"
+  fm_write_meta "$d/state/mate.meta" "window=fm:fm-mate" "worktree=$d/wt" "kind=ship" "harness=claude"
   printf 'needs-decision [key=race]: pick subscribe order\n' > "$d/state/mate.status"
   printf 'resolved [key=race]: went with subscribe-before-write\n' >> "$d/state/mate.status"
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" mate
   local out; out=$(run_crew_state "$d" mate)
-  assert_contains "$out" "state: unknown" "resolved-then-idle secondmate is not a spurious run-state"
+  assert_contains "$out" "state: unknown" "resolved-then-idle crew is not a spurious run-state"
   assert_contains "$out" "source: none" "a resolved event is not treated as a status-log state source"
   assert_not_contains "$out" "subscribe-before-write" "resolution prose must not leak into the detail"
   # A bare (non-keyed) resolved: closes the default key and behaves the same.
@@ -1407,7 +1409,7 @@ test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
 test_no_run_idle_pane_custom_paused_verb
-test_no_run_idle_secondmate_resolved_event_not_state
+test_no_run_idle_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step

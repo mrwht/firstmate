@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-reply-expected] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -21,34 +21,6 @@
 # Slash commands, and codex `$...` skill invocations resolved through harness
 # meta, get a longer pre-Enter settle so completion popups do not swallow Enter.
 #
-# From-firstmate marker: when the resolved target is a task selector whose meta
-# records kind=secondmate, the text uses the live-charter-compatible
-# from-firstmate carrier owned by bin/fm-operational-input.sh so the secondmate
-# routes its reply via its status file or a status-pointed doc instead of
-# stranding it in chat the main firstmate never reads. A crewmate/scout target,
-# an explicit backend-target escape-hatch target, and the --key path are never
-# marked - their behavior is unchanged.
-#
-# Parent-owned pending-reply expectation: every newly marked secondmate request
-# also receives a privacy-safe correlation id and a durable parent record under
-# state/pending-replies/ before delivery (bin/fm-pending-reply-lib.sh). Delivery
-# success and reply success are separate facts: a successful submit never
-# resolves the expectation. Set FM_PENDING_REPLY_EXISTING_CORR=<id> when
-# re-sending a recovery request for an already-open expectation so a second
-# record is not created. Direct unmarked captain input never creates one.
-#
-# Fire-and-forget marked sends: pass --no-reply-expected for a marked secondmate
-# send that is not itself a request needing a tracked reply - an acknowledgment,
-# an FYI, a reclassification of an earlier notice. The message is still marked
-# from-firstmate (the secondmate still routes any reply via its status channel),
-# but no pending-reply expectation is created, so the send cannot age into its
-# own pending-reply-missed escalation. Without this flag every marked send,
-# including a routine acknowledgment, opens an expectation that will escalate
-# if the secondmate never echoes the embedded corr= token back - closing out a
-# stale escalation with an unmarked acknowledgment would otherwise just create
-# the next one. Refused with --key (no text is sent) and with a target that
-# does not resolve to a marked secondmate send (nothing to suppress there).
-#
 # Decision closure (answerer-closes): pass --resolve-key <key> (repeatable,
 # before the message) when this send answers an open keyed needs-decision: or
 # blocked: record in the target task's state/<id>.status. After the submit is
@@ -56,11 +28,10 @@
 # "resolved [key=<key>]: answered: <capped excerpt>" line to that status file,
 # so the captain-facing OPEN DECISIONS record closes at answer time and never
 # depends on the busy worker writing a matching resolved line. The close is a
-# LOCAL append for every target kind - crewmate, scout, local secondmate, and
-# remote secondmate alike - because the open-decision ledger fm-wake-drain
-# folds lives in this home's own state dir (a remote mate's escalations reach
-# it through the parent-replies ingest); only the answer message crosses the
-# backend or remote transport. Each named key must currently be open in that
+# LOCAL append for every target kind - crewmate, scout, and secondmate alike -
+# because the open-decision ledger fm-wake-drain folds lives in this home's
+# own state dir; only the answer message crosses the backend transport. Each
+# named key must currently be open in that
 # ledger per status_open_decisions (bin/fm-classify-lib.sh) or fm-send refuses
 # before sending, so a mistyped key cannot deliver an answer while silently
 # orphaning the decision. A failed or unconfirmed send never closes a key; a
@@ -72,15 +43,10 @@
 # home), and with an empty message.
 #
 # A key in a reserved namespace (bin/fm-classify-lib.sh's
-# FM_CLASSIFY_RESERVED_KEY_PREFIXES, currently pending-reply-<corr>) closes only
-# when its note speaks that namespace's own vocabulary, so the closing note gets
-# that namespace's prefix instead of the plain "answered: " one - this is what
-# lets --resolve-key close a pending-reply-missed escalation at all; a plain
-# "answered: " note there would silently fail the reserved-key check and leave
-# the decision open forever. This closes only the captain-facing decision line;
-# it never marks the underlying pending-reply record itself resolved, because
-# that record's safety property is that only a correlated secondmate report may
-# do that (bin/fm-pending-reply-lib.sh).
+# FM_CLASSIFY_RESERVED_KEY_PREFIXES) closes only when its note speaks that
+# namespace's own vocabulary, so the closing note gets that namespace's prefix
+# instead of the plain "answered: " one; a plain "answered: " note there would
+# silently fail the reserved-key check and leave the decision open forever.
 #
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
@@ -118,10 +84,6 @@ fi
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
-# shellcheck source=bin/fm-marker-lib.sh
-. "$SCRIPT_DIR/fm-marker-lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
-. "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
@@ -215,7 +177,6 @@ fm_send_resolve_target() {  # <raw-target>
   EXPECTED_LABEL=""
   TARGET_META=""
   TARGET_SELECTOR=""
-  TARGET_REMOTE_ID=""
   RESOLUTION_TRIED=""
 
   meta=$(fm_backend_meta_for_selector "$raw" "$STATE" 2>/dev/null || true)
@@ -228,7 +189,6 @@ fm_send_resolve_target() {  # <raw-target>
       TARGET_HARNESS=$(fm_meta_get "$meta" harness)
       EXPECTED_LABEL="fm-$id"
       TARGET_SELECTOR=1
-      TARGET_REMOTE_ID=$id
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
@@ -333,7 +293,6 @@ fm_send_add_resolve_key() {  # <key>
   esac
   RESOLVE_KEYS="${RESOLVE_KEYS}${RESOLVE_KEYS:+ }$k"
 }
-NO_REPLY_EXPECTED=0
 while :; do
   case "${1:-}" in
     --resolve-key)
@@ -345,45 +304,12 @@ while :; do
       fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
       shift
       ;;
-    --no-reply-expected)
-      NO_REPLY_EXPECTED=1
-      shift
-      ;;
     *) break ;;
   esac
 done
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
-fi
-
-# Classify a from-firstmate -> secondmate request. Only a task selector resolved
-# through this home's meta whose authoritative kind is secondmate is marked: the
-# secondmate then routes its reply via the status path (see fm-marker-lib.sh).
-# An explicit backend target (the escape hatch for endpoints outside this home)
-# and any crewmate/scout target are left unmarked, and so is the --key path.
-MARK_FROM_FIRSTMATE=0
-PENDING_REPLY_CORR=
-PENDING_REPLY_CREATED=0
-TARGET_TASK_ID=
-if [ -n "$TARGET_SELECTOR" ] && [ -n "$TARGET_META" ] && [ "$(fm_meta_get "$TARGET_META" kind)" = secondmate ]; then
-  MARK_FROM_FIRSTMATE=1
-  TARGET_TASK_ID=$(fm_send_id_from_meta "$TARGET_META")
-fi
-
-# --no-reply-expected only has meaning for a marked secondmate send: refuse
-# loud rather than silently doing nothing when the target never marks anyway,
-# and refuse with --key for the same reason --resolve-key does (a fire-and-
-# forget send is still text, not a key press).
-if [ "$NO_REPLY_EXPECTED" = 1 ]; then
-  if [ "$MARK_FROM_FIRSTMATE" != 1 ]; then
-    echo "error: --no-reply-expected needs a task selector resolved through this home's metadata whose kind is secondmate; other targets never create a pending-reply expectation" >&2
-    exit 1
-  fi
-  if [ "${1:-}" = "--key" ]; then
-    echo "error: --no-reply-expected cannot accompany --key; a fire-and-forget send requires a text message" >&2
-    exit 1
-  fi
 fi
 
 # Validate the answerer-closes request before any durable mutation or send: the
@@ -474,12 +400,7 @@ if [ "${1:-}" = "--key" ]; then
   esac
   key=$2
   semantic_key=$(fm_send_normalize_key "$key")
-  if [ "$TARGET_BACKEND" = remote ]; then
-    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$key" < /dev/null; then
-      echo "error: key '$key' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
-      exit 1
-    fi
-  elif ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL"; then
+  if ! fm_backend_send_key "$TARGET_BACKEND" "$T" "$key" "$EXPECTED_LABEL"; then
     echo "error: key '$key' not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
@@ -487,40 +408,7 @@ if [ "${1:-}" = "--key" ]; then
   fm_send_record_interrupt "$semantic_key" || exit 1
 else
   MESSAGE=$*
-  # The pre-marker answer text, kept for the closing resolved note so the
-  # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
-  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ "$NO_REPLY_EXPECTED" = 1 ]; then
-    # Fire-and-forget: still route through the from-firstmate carrier so the
-    # secondmate treats it as an operational message, but create no pending-
-    # reply expectation - this send is not itself a request needing a tracked
-    # reply, so it must never age into its own pending-reply-missed escalation.
-    fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
-  elif [ "$MARK_FROM_FIRSTMATE" = 1 ]; then
-    # Reuse an existing correlation id for recovery resends; otherwise create a
-    # durable parent expectation before delivery. Transport success never
-    # resolves that expectation (see fm-pending-reply-lib.sh).
-    existing_corr=${FM_PENDING_REPLY_EXISTING_CORR:-$(fm_pending_reply_extract_corr "$MESSAGE")}
-    if [ -n "$existing_corr" ] \
-      && fm_pending_reply_corr_reusable "$STATE" "$existing_corr" "$TARGET_TASK_ID"; then
-      PENDING_REPLY_CORR=$existing_corr
-    else
-      if [ -z "$TARGET_TASK_ID" ]; then
-        echo "error: cannot create pending-reply expectation without a resolvable secondmate task id" >&2
-        exit 1
-      fi
-      PENDING_REPLY_CORR=$(fm_pending_reply_create "$FM_HOME" "$STATE" "$TARGET_TASK_ID" "$MESSAGE") \
-        || { echo "error: failed to create parent pending-reply expectation for $TARGET_TASK_ID" >&2; exit 1; }
-      PENDING_REPLY_CREATED=1
-    fi
-    fm_pending_reply_embed_corr "$MESSAGE" "$PENDING_REPLY_CORR" MESSAGE
-    if [ "$PENDING_REPLY_CREATED" = 1 ] \
-      && ! fm_pending_reply_prepare_delivery "$STATE" "$PENDING_REPLY_CORR"; then
-      fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
-      echo "error: failed to durably prepare pending-reply delivery for $TARGET_TASK_ID" >&2
-      exit 1
-    fi
-  fi
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before
   # the (retried) Enter. Codex opens the same kind of popup for a `$<skill>`
@@ -541,27 +429,12 @@ else
   # Type once, submit, verify. Only exact empty confirms delivery; every other
   # verdict preserves the loud refusal boundary.
   send_rc=0
-  if [ "$TARGET_BACKEND" = remote ]; then
-    if "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send "$TARGET_REMOTE_ID" "$MESSAGE" < /dev/null >/dev/null; then
-      verdict=empty
-    else
-      send_rc=$?
-      verdict=send-failed
-    fi
-  elif verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
+  if verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MESSAGE" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
     :
   else
     send_rc=$?
   fi
   if [ "$send_rc" -ne 0 ]; then
-    if [ "$TARGET_BACKEND" = remote ] && [ "$send_rc" -eq 255 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-      fm_pending_reply_mark_delivery_unknown "$STATE" "$PENDING_REPLY_CORR" || true
-      echo "error: text delivery to remote secondmate $TARGET_REMOTE_ID is unknown; do not resend - same-host reconciliation is required" >&2
-      exit 1
-    fi
-    if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-      fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
-    fi
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
@@ -569,35 +442,14 @@ else
     empty)
       ;;
     send-failed)
-      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
-      fi
       echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
     *)
-      if [ "$PENDING_REPLY_CREATED" = 1 ] && [ -n "$PENDING_REPLY_CORR" ]; then
-        fm_pending_reply_discard_undelivered "$STATE" "$PENDING_REPLY_CORR" || true
-      fi
       echo "error: text not submitted to $T (delivery unconfirmed; verdict=${verdict:-unknown}; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
   esac
-  # Delivery confirmed. Mark the pending expectation delivered without resolving
-  # it: only a correlated parent report acknowledges the request.
-  if [ -n "$PENDING_REPLY_CORR" ]; then
-    if fm_pending_reply_confirm_delivery "$STATE" "$PENDING_REPLY_CORR"; then
-      :
-    else
-      delivery_commit_status=$?
-      if [ "$delivery_commit_status" = 2 ]; then
-        echo "error: text was delivered to $T, but its pending-reply delivery commit failed; a durable recovery marker was stored and the watcher will reconcile it. Do not resend." >&2
-      else
-        echo "error: text was delivered to $T, but its pending-reply delivery commit and recovery marker both failed. Do not resend; inspect $STATE manually." >&2
-      fi
-      exit 1
-    fi
-  fi
   # Delivery is fully confirmed: close each answered decision in this home's
   # ledger (answerer-closes; see the header contract).
   if [ -n "$RESOLVE_KEYS" ]; then

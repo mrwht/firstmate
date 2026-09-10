@@ -3,14 +3,12 @@
 # CONTROL-PLANE mechanics.
 #
 # Data plane vs control plane (captain-approved root architecture, 2026-07-13).
-# bin/fm-send.sh is the DATA plane: conversational text for the agent to read,
-# always routing-marked for a kind=secondmate target so the reply comes back
-# through the status path. That marking is exactly right for a message and
-# exactly wrong for a lifecycle command: a marked "/quit" arrives as ordinary
-# chat ("[fm-from-firstmate] /quit") that the agent reasons ABOUT instead of
-# executing. bin/fm-control.sh is the CONTROL plane: allowlisted lifecycle
-# verbs addressed to an exact task id, with the per-harness mechanics owned
-# here rather than improvised per harness in agent prose.
+# bin/fm-send.sh is the DATA plane: conversational text for the agent to read.
+# A lifecycle command sent as text is wrong: a "/quit" arrives as ordinary
+# chat the agent reasons ABOUT instead of executing. bin/fm-control.sh is the
+# CONTROL plane: allowlisted lifecycle verbs addressed to an exact task id,
+# with the per-harness mechanics owned here rather than improvised per
+# harness in agent prose.
 #
 # This file owns three capability tables plus their pure artifact-path tables
 # and nothing else. It has no side effects, runs no backend command, and reads
@@ -91,18 +89,13 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse and cursor are
-# crewmate/scout adapters only: neither has a primary supervision protocol, and
-# bin/fm-spawn.sh refuses a --secondmate launch on either. The control plane
-# asks this BEFORE it stops anything, so an incompatible relaunch target is
-# refused while the current agent is still running rather than after it has
-# been stopped.
+# Which task kinds an adapter is verified to run. The control plane asks this
+# BEFORE it stops anything, so an incompatible relaunch target is refused
+# while the current agent is still running rather than after it has been
+# stopped.
 fm_control_harness_supports_kind() {  # <harness> <kind>
-  local harness=${1-} kind=${2-}
+  local harness=${1-}
   fm_control_harness_supported "$harness" || return 1
-  case "$harness" in
-    cursor|muse) [ "$kind" != secondmate ] || return 1 ;;
-  esac
   return 0
 }
 

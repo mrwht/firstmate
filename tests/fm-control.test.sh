@@ -14,9 +14,8 @@
 #   4. Verb allowlist: no arbitrary text, no raw keys, no resume.
 #   5. Lifecycle states: busy interrupts first, idle does not, already-stopped
 #      is idempotent success, and an agent that does not stop fails closed.
-#   6. Marker non-regression: a control command to a kind=secondmate task
-#      carries NO from-firstmate marker and opens no pending-reply expectation,
-#      while fm-send's marking of the same task is untouched.
+#   6. Marker non-regression: a control command to a secondmate task carries
+#      NO from-firstmate marker and opens no pending-reply expectation.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -27,7 +26,6 @@ set -u
 . "$ROOT/bin/fm-marker-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
-SEND="$ROOT/bin/fm-send.sh"
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
 # so recreate the root before resolving it and clean it up from this file's trap.
 TMP_ROOT=$(fm_test_tmproot fm-control)
@@ -360,11 +358,8 @@ test_backend_key_capability_matrix() {
   pass "fm-control-lib: the backend key matrix matches each adapter's real send-key surface"
 }
 
-# A verified adapter is not automatically verified for every task kind, and the
-# check has to sit on the pre-stop side of a relaunch: muse has no primary
-# supervision protocol, so bin/fm-spawn.sh refuses it for a secondmate, and
-# discovering that only after the running agent was stopped would strand the
-# secondmate with no agent at all.
+# The check has to sit on the pre-stop side of a relaunch: an unverified
+# adapter must be refused before the running agent is stopped, not after.
 test_harness_kind_capability() {
   local harness
   for harness in $VERIFIED_HARNESSES; do
@@ -373,15 +368,9 @@ test_harness_kind_capability() {
     fm_control_harness_supports_kind "$harness" scout \
       || fail "$harness should be able to run a scout task"
   done
-  fm_control_harness_supports_kind muse secondmate \
-    && fail "muse has no primary supervision protocol and must not claim a secondmate"
-  for harness in claude codex opencode pi pi-signed grok kimi; do
-    fm_control_harness_supports_kind "$harness" secondmate \
-      || fail "$harness should be able to run a secondmate"
-  done
   fm_control_harness_supports_kind someagent ship \
     && fail "an unverified harness must not claim any kind"
-  pass "fm-control-lib: adapter capability is per task kind, not per adapter alone"
+  pass "fm-control-lib: adapter capability requires a verified adapter"
 }
 
 test_orca_refuses_an_escape_harness_interrupt() {
@@ -853,23 +842,6 @@ test_secondmate_control_command_carries_no_marker() {
   pass "fm-control: a lifecycle command to a secondmate is unmarked and opens no reply expectation"
 }
 
-test_fm_send_still_marks_the_same_secondmate_task() {
-  local dir log out rc
-  dir=$(new_case sm-send)
-  add_task "$dir" domain claude secondmate
-  log="$dir/fake/sendlog"
-  : > "$log"
-  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
-    FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$dir/home" \
-    "$SEND" domain "audit the build" 2>&1); rc=$?
-  expect_code 0 "$rc" "fm-send to a secondmate should still succeed"$'\n'"$out"
-  case "$(literals "$dir")" in
-    "$FM_FROMFIRST_MARK"*) : ;;
-    *) fail "fm-send must still mark a kind=secondmate target: $(literals "$dir")" ;;
-  esac
-  pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
-}
-
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once
@@ -904,4 +876,3 @@ test_agent_that_does_not_stop_fails_closed
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
-test_fm_send_still_marks_the_same_secondmate_task
