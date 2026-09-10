@@ -103,16 +103,16 @@ test_unmarked_linked_worktree_is_silent() {
   pass "fm-sessionstart-nudge: an unmarked linked task worktree is silent"
 }
 
-test_linked_secondmate_primary_nudges() {
+test_linked_worktree_with_stray_marker_is_silent() {
   local base="$TMP_ROOT/secondmate-base" root="$TMP_ROOT/secondmate-home" out status=0
   fm_git_worktree "$base" "$root" fm/sessionstart-secondmate
   mkdir -p "$root/bin" "$root/state"
   : > "$root/AGENTS.md"
   printf 'sessionstart-sm\n' > "$root/.fm-secondmate-home"
   out=$(run_nudge "$root") || status=$?
-  expect_code 0 "$status" "linked secondmate nudge"
-  [ "$out" = "$NUDGE_LINE" ] || fail "linked secondmate printed unexpected output: $out"
-  pass "fm-sessionstart-nudge: a marked linked secondmate home is a primary"
+  expect_code 0 "$status" "linked worktree with stray marker nudge"
+  [ -z "$out" ] || fail "a stray marker file must not pull a linked worktree into scope: $out"
+  pass "fm-sessionstart-nudge: a leftover marker file has no effect; a linked worktree stays silent"
 }
 
 test_missing_state_is_silent() {
@@ -536,7 +536,7 @@ test_genuine_primary_nudges
 test_gate_env_is_silent
 test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
-test_linked_secondmate_primary_nudges
+test_linked_worktree_with_stray_marker_is_silent
 test_missing_state_is_silent
 test_owned_lock_is_silent
 test_opencode_plugin_delivers_exact_nudge_once

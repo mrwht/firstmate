@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Turn-end guard for any firstmate PRIMARY session: the main home OR a
-# secondmate's own home. A secondmate runs its own primary firstmate session and
-# is guarded exactly like the main primary; only child crew/scout worktrees are
-# exempt (see the scoping block below and docs/turnend-guard.md).
+# Turn-end guard for the firstmate PRIMARY session: the main home. Only child
+# crew/scout worktrees are exempt (see the scoping block below and
+# docs/turnend-guard.md).
 #
 # fm-guard.sh (bin/fm-guard.sh) is pull-based: it only warns when some other
 # supervision script happens to run. A primary session that ends a turn without
@@ -19,14 +18,11 @@
 # and fail-open tradeoffs.
 #
 # Ships with TRACKED harness hook files at the repo root, so this file is
-# checked out into every worktree of this repo: the primary checkout, every
-# secondmate home (treehouse-leased or git-cloned), and any crewmate/scout task
-# worktree spawned to work on firstmate itself (the recursive "firstmate
-# improving itself" case). A secondmate home runs its OWN primary firstmate
-# session, so it must be guarded like the main primary; only child crew/scout
-# worktrees are exempt. It must therefore scope itself at runtime to a real
-# primary checkout - the main home or a genuinely marked secondmate home - and
-# stay a silent, fast no-op inside child task worktrees.
+# checked out into every worktree of this repo: the primary checkout, and any
+# crewmate/scout task worktree spawned to work on firstmate itself (the
+# recursive "firstmate improving itself" case). It must therefore scope itself
+# at runtime to the real primary checkout and stay a silent, fast no-op inside
+# child task worktrees.
 #
 # Loop-guard, codex/Grok (default) mode: never block twice in the same turn.
 # Codex uses stop_hook_active and Grok uses stopHookActive; typed camel-case
@@ -110,18 +106,12 @@ if [ "$CLAUDE_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
-# --- scope precisely to a PRIMARY checkout ----------------------------------
-# A genuinely-marked secondmate home runs its OWN primary firstmate session, so
-# force-INCLUDE it as a guarded primary whether treehouse leased it as a linked
-# worktree (git-dir != git-common-dir) or it is a git-cloned plain checkout. This
-# mirrors the cd-guard's intent that a secondmate's own session is a guarded
-# primary. Only an UNMARKED checkout (or one with an invalid marker) falls
-# through to the linked-worktree exemption: firstmate hands out crewmate/scout
-# task worktrees as genuine linked `git worktree`s (bin/fm-spawn.sh aborts
-# otherwise), whose git-dir lives under the parent repo's .git/worktrees/<name>
-# and differs from the common (shared) git-dir, while a main, non-worktree
-# checkout has the two equal. Child worktrees never carry the gitignored marker,
-# so this exempts them while guarding every real secondmate home.
+# --- scope precisely to the PRIMARY checkout --------------------------------
+# Only a plain, non-worktree checkout is the guarded primary. firstmate hands
+# out crewmate/scout task worktrees as genuine linked `git worktree`s
+# (bin/fm-spawn.sh aborts otherwise), whose git-dir lives under the parent
+# repo's .git/worktrees/<name> and differs from the common (shared) git-dir,
+# while the main checkout has the two equal. This exempts every child worktree.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 # --- the actual predicate ----------------------------------------------------

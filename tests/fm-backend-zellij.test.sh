@@ -121,19 +121,8 @@ zellij_expected_root_hash() {  # <root>
 }
 
 zellij_expected_home_label() {  # [home] [root]
-  local home=${1:-$ROOT} root=${2:-$ROOT} marker id prefix
-  marker="$home/.fm-secondmate-home"
-  if [ -f "$marker" ]; then
-    id=$(tr -d '[:space:]' < "$marker" 2>/dev/null)
-    if [ -n "$id" ]; then
-      prefix="2ndmate-$id"
-    else
-      prefix="firstmate"
-    fi
-  else
-    prefix="firstmate"
-  fi
-  printf '%s-%s' "$prefix" "$(zellij_expected_root_hash "$root")"
+  local root=${2:-$ROOT}
+  printf 'firstmate-%s' "$(zellij_expected_root_hash "$root")"
 }
 
 zellij_expected_scoped_title() {  # <fm-task-label> [home] [root]
@@ -241,14 +230,14 @@ test_scoped_title_uses_primary_home_label() {
   pass "fm_backend_zellij_scoped_title: scopes a primary task title with firstmate plus root hash"
 }
 
-test_scoped_title_uses_secondmate_home_label() {
+test_scoped_title_ignores_stray_marker_file() {
   local dir out expected
-  dir="$TMP_ROOT/scoped-title-secondmate"; mkdir -p "$dir"
+  dir="$TMP_ROOT/scoped-title-stray-marker"; mkdir -p "$dir"
   printf 'sm-one\n' > "$dir/.fm-secondmate-home"
   expected=$(zellij_expected_scoped_title fm-task1 "$dir")
   out=$( FM_HOME="$dir" bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_scoped_title fm-task1' "$ROOT" )
-  [ "$out" = "$expected" ] || fail "secondmate scoped title should be $expected, got '$out'"
-  pass "fm_backend_zellij_scoped_title: scopes a secondmate task title with the home marker plus root hash"
+  [ "$out" = "$expected" ] || fail "stray marker file should not change the scoped title, expected $expected, got '$out'"
+  pass "fm_backend_zellij_scoped_title: a stray leftover marker file has no effect on the scoped title"
 }
 
 test_scoped_title_changes_with_root_path() {
@@ -1303,7 +1292,7 @@ test_session_honors_override
 test_parse_target
 test_normalize_key
 test_scoped_title_uses_primary_home_label
-test_scoped_title_uses_secondmate_home_label
+test_scoped_title_ignores_stray_marker_file
 test_scoped_title_changes_with_root_path
 test_expected_label_accepts_unambiguous_untagged_legacy_tab
 test_expected_label_refuses_ambiguous_untagged_tab
