@@ -138,9 +138,10 @@ make_primary_dir() {
   printf '%s\n' "$dir"
 }
 
-# Same shape as primary, plus the .fm-secondmate-home marker bin/fm-home-seed.sh
-# writes at seed time (regardless of treehouse-lease or git-clone acquisition).
-make_secondmate_dir() {
+# Same shape as primary, plus a leftover marker file from before secondmate
+# homes were retired. The marker has no effect on scoping any more; these
+# fixtures exist only to prove a stray file never changes the outcome.
+make_stray_marker_dir() {
   local dir=$1
   make_primary_dir "$dir" >/dev/null
   printf 'sm-test-1\n' > "$dir/.fm-secondmate-home"
@@ -159,32 +160,15 @@ make_crewmate_worktree_dir() {
   printf '%s\n' "$dir"
 }
 
-# A secondmate home's OWN child crew/scout worktree: a genuine linked git
-# worktree of the secondmate home, so git-dir != git-common-dir exactly as for a
-# main-home child worktree. A child worktree never carries the gitignored
-# .fm-secondmate-home marker, so the marker force-include never fires for it and
-# it stays exempt through the linked-worktree git-dir test.
-make_secondmate_child_worktree_dir() {
+# A genuine linked git worktree of a stray-marker home, so git-dir !=
+# git-common-dir exactly as for a main-home child worktree. Proves the marker
+# never spoofs a linked worktree into being treated as primary.
+make_stray_marker_child_worktree_dir() {
   local home=$1 dir=$2
   git -C "$home" worktree add --quiet -b fm/turnend-secondmate-child "$dir"
   mkdir -p "$dir/state"
   : > "$dir/AGENTS.md"
   install_guard_scripts "$dir"
-  printf '%s\n' "$dir"
-}
-
-# A treehouse-leased secondmate HOME: a genuine linked `git worktree` (git-dir !=
-# git-common-dir, exactly like a default treehouse-leased home) that DOES carry a
-# valid .fm-secondmate-home marker. This is the production topology the plain
-# git-init secondmate fixture cannot represent; the guard must force-INCLUDE it
-# as a guarded primary via the marker, not exempt it as a linked worktree.
-make_secondmate_linked_home_dir() {
-  local base=$1 dir=$2
-  fm_git_worktree "$base" "$dir" fm/turnend-secondmate-linked-home
-  mkdir -p "$dir/state"
-  : > "$dir/AGENTS.md"
-  install_guard_scripts "$dir"
-  printf 'sm-linked-1\n' > "$dir/.fm-secondmate-home"
   printf '%s\n' "$dir"
 }
 
@@ -432,57 +416,54 @@ test_hook_loop_guard_allows_retry() {
   pass "fm-turnend-guard: stop_hook_active=true always allows the stop (never blocks twice in one turn)"
 }
 
-# A secondmate's OWN home runs a primary firstmate session and must be guarded
-# exactly like the main primary. This was the guard's proven blind spot: the
-# .fm-secondmate-home marker used to early-exit here, so an overnight secondmate
-# could end a turn with an unsupervised child and sit blind. Removing that marker
-# check makes the guard fire, mirroring the cd-guard.
-test_hook_blocks_in_secondmate_own_home() {
+# A stray leftover marker file in an otherwise-primary checkout has no effect:
+# the checkout is guarded exactly like any other plain primary.
+test_hook_blocks_with_stray_marker_in_primary() {
   local dir out status
-  dir=$(make_secondmate_dir "$TMP_ROOT/hook-secondmate")
+  dir=$(make_stray_marker_dir "$TMP_ROOT/hook-stray-marker-home")
   : > "$dir/state/task1.meta"
   out=$(run_hook "$dir" false); status=$?
-  expect_code 2 "$status" "hook must guard a secondmate's own home like the main primary when unhealthy"
+  expect_code 2 "$status" "hook must guard a plain primary checkout even with a stray marker file"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   assert_contains "$out" "TURN WOULD END BLIND" "block banner must read as an alarm"
-  pass "fm-turnend-guard: blocks a blind turn end in a secondmate's own home (.fm-secondmate-home no longer excludes it)"
+  pass "fm-turnend-guard: blocks a blind turn end in a primary checkout with a stray marker file"
 }
 
-# Idle-by-default: an empty-queue secondmate has no in-flight meta, so the guard
+# Idle-by-default: an empty-queue home has no in-flight meta, so the guard
 # exits at the in-flight gate - never forcing a busy continuation loop.
-test_hook_silent_in_idle_secondmate_home() {
+test_hook_silent_in_idle_stray_marker_home() {
   local dir out status
-  dir=$(make_secondmate_dir "$TMP_ROOT/hook-secondmate-idle")
+  dir=$(make_stray_marker_dir "$TMP_ROOT/hook-stray-marker-idle")
   out=$(run_hook "$dir" false); status=$?
-  expect_code 0 "$status" "hook must stay silent in an idle, empty-queue secondmate home"
-  [ -z "$out" ] || fail "idle secondmate home produced guard output: $out"
-  pass "fm-turnend-guard: idle-by-default - silent in a secondmate home with nothing in flight"
+  expect_code 0 "$status" "hook must stay silent in an idle, empty-queue home"
+  [ -z "$out" ] || fail "idle home produced guard output: $out"
+  pass "fm-turnend-guard: idle-by-default - silent in a stray-marker home with nothing in flight"
 }
 
-# The stop_hook_active loop guard bounds the secondmate to one forced
-# continuation per turn, exactly as it does for the main primary - no wedged,
-# un-endable session.
-test_hook_secondmate_loop_guard_allows_retry() {
+# The stop_hook_active loop guard bounds this home to one forced continuation
+# per turn, exactly as it does for any main primary - no wedged, un-endable
+# session.
+test_hook_stray_marker_loop_guard_allows_retry() {
   local dir out status
-  dir=$(make_secondmate_dir "$TMP_ROOT/hook-secondmate-loopguard")
+  dir=$(make_stray_marker_dir "$TMP_ROOT/hook-stray-marker-loopguard")
   : > "$dir/state/task1.meta"
   out=$(run_hook "$dir" true); status=$?
-  expect_code 0 "$status" "hook must allow the stop in a secondmate home when stop_hook_active is already true"
-  [ -z "$out" ] || fail "secondmate loop-guarded retry produced output: $out"
-  pass "fm-turnend-guard: stop_hook_active=true allows the stop in a secondmate home (never blocks twice in one turn)"
+  expect_code 0 "$status" "hook must allow the stop when stop_hook_active is already true"
+  [ -z "$out" ] || fail "stray-marker loop-guarded retry produced output: $out"
+  pass "fm-turnend-guard: stop_hook_active=true allows the stop in a stray-marker home (never blocks twice in one turn)"
 }
 
-# The guard's half of the deferred-death recovery loop in a secondmate home,
-# proven deterministically without a live model or any daemon: silent while the
-# watcher is live (the secondmate ends its turn and relies on the background
-# re-invoke), then blocks to force the re-arm once the watcher has exited and a
-# second child event lands. The live half - that Claude Code autonomously
-# re-invokes the model when the background watcher exits (Mechanism A) - is a
-# harness property recorded empirically in docs/turnend-guard.md; it needs a live
-# session and cannot be a hermetic CI assertion.
-test_hook_secondmate_reinvoke_recovery_loop() {
+# The guard's half of the deferred-death recovery loop, proven deterministically
+# without a live model or any daemon: silent while the watcher is live (the
+# session ends its turn and relies on the background re-invoke), then blocks to
+# force the re-arm once the watcher has exited and a second child event lands.
+# The live half - that Claude Code autonomously re-invokes the model when the
+# background watcher exits (Mechanism A) - is a harness property recorded
+# empirically in docs/turnend-guard.md; it needs a live session and cannot be a
+# hermetic CI assertion.
+test_hook_stray_marker_reinvoke_recovery_loop() {
   local dir pid identity out status
-  dir=$(make_secondmate_dir "$TMP_ROOT/hook-secondmate-reinvoke")
+  dir=$(make_stray_marker_dir "$TMP_ROOT/hook-stray-marker-reinvoke")
   : > "$dir/state/child1.meta"
   sleep 60 &
   pid=$!
@@ -494,67 +475,44 @@ test_hook_secondmate_reinvoke_recovery_loop() {
   record_watcher_lock "$dir" "$pid" "$identity"
   touch "$dir/state/.last-watcher-beat"
   out=$(run_hook "$dir" false); status=$?
-  expect_code 0 "$status" "secondmate turn must end silently while its watcher is live (Stop #1)"
+  expect_code 0 "$status" "turn must end silently while its watcher is live (Stop #1)"
   [ -z "$out" ] || {
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    fail "guard nagged a healthy secondmate at Stop #1: $out"
+    fail "guard nagged a healthy home at Stop #1: $out"
   }
   # The watcher exits on the wake (its normal lifecycle) and a SECOND child event
-  # lands. On the re-invoked recovery turn the secondmate must re-arm; if it did
-  # not, the guard blocks that turn's end and forces the re-arm (Stop #2).
+  # lands. On the re-invoked recovery turn the home must re-arm; if it did not,
+  # the guard blocks that turn's end and forces the re-arm (Stop #2).
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   rm -rf "$dir/state/.watch.lock"
   : > "$dir/state/child2.meta"
   touch "$dir/state/.last-watcher-beat"
   out=$(run_hook "$dir" false); status=$?
-  expect_code 2 "$status" "secondmate recovery turn must not end blind after the watcher exits (Stop #2)"
+  expect_code 2 "$status" "recovery turn must not end blind after the watcher exits (Stop #2)"
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
-  pass "fm-turnend-guard: secondmate deferred-death recovery - silent while watched, forces re-arm once the watcher exits"
+  pass "fm-turnend-guard: deferred-death recovery - silent while watched, forces re-arm once the watcher exits"
 }
 
-# The marker force-include must guard only the secondmate's OWN home, never its
-# children: a secondmate's linked crew/scout worktree carries no marker, so it
-# stays exempt by the same git-dir/git-common-dir test that exempts the main
-# home's children.
-test_hook_silent_in_secondmate_child_worktree() {
+# A stray marker file must guard only the home that carries it, never its
+# children: a linked crew/scout worktree of a stray-marker home stays exempt by
+# the same git-dir/git-common-dir test that exempts the main home's children.
+test_hook_silent_in_stray_marker_child_worktree() {
   local home dir out status
-  home=$(make_secondmate_dir "$TMP_ROOT/hook-sm-child-home")
+  home=$(make_stray_marker_dir "$TMP_ROOT/hook-sm-child-home")
   dir="$TMP_ROOT/hook-sm-child-wt"
-  make_secondmate_child_worktree_dir "$home" "$dir" >/dev/null
+  make_stray_marker_child_worktree_dir "$home" "$dir" >/dev/null
   : > "$dir/state/task1.meta"
   out=$(run_hook "$dir" false); status=$?
-  expect_code 0 "$status" "hook must stay exempt in a secondmate's own child crew/scout worktree"
-  [ -z "$out" ] || fail "hook produced output inside a secondmate's child worktree: $out"
-  pass "fm-turnend-guard: inert in a secondmate's own child worktree (linked git worktree) even when unhealthy"
+  expect_code 0 "$status" "hook must stay exempt in a stray-marker home's own child crew/scout worktree"
+  [ -z "$out" ] || fail "hook produced output inside a stray-marker home's child worktree: $out"
+  pass "fm-turnend-guard: inert in a stray-marker home's own child worktree (linked git worktree) even when unhealthy"
 }
 
-# THE regression the plain git-init fixtures masked: a treehouse-leased secondmate
-# home is a genuine LINKED worktree (git-dir != git-common-dir), which the
-# remove-only form wrongly exempted. With the marker force-include, its own
-# primary session is GUARDED. The test asserts the fixture really is a linked
-# worktree so it can never silently regress back into a plain-checkout shape.
-test_hook_blocks_in_treehouse_leased_secondmate_home() {
-  local base dir gd gcd out status
-  base="$TMP_ROOT/hook-sm-leased-base"
-  dir="$TMP_ROOT/hook-sm-leased-home"
-  make_secondmate_linked_home_dir "$base" "$dir" >/dev/null
-  gd=$(git -C "$dir" rev-parse --git-dir)
-  gcd=$(git -C "$dir" rev-parse --git-common-dir)
-  [ "$gd" != "$gcd" ] || fail "leased-home fixture must be a linked worktree (git-dir != git-common-dir), got equal: $gd"
-  : > "$dir/state/task1.meta"
-  out=$(run_hook "$dir" false); status=$?
-  expect_code 2 "$status" "hook must GUARD a treehouse-leased (linked) secondmate home via its marker when unhealthy"
-  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
-  assert_contains "$out" "TURN WOULD END BLIND" "block banner must read as an alarm"
-  pass "fm-turnend-guard: blocks a blind turn end in a treehouse-leased LINKED secondmate home (marker force-include)"
-}
-
-# Anti-spoof: a linked worktree with an INVALID (empty) marker must NOT be
-# force-included. Marker validation rejects it, so it falls through to the
-# linked-worktree exemption and stays exempt - a stray/empty marker file can
-# never spoof a child worktree into being guarded.
+# Anti-spoof: a linked worktree with a marker file (empty or otherwise) must NOT
+# be force-included. The marker no longer has any special meaning, so it falls
+# through to the ordinary linked-worktree exemption and stays exempt.
 test_hook_exempts_linked_worktree_with_stray_marker() {
   local base dir out status
   base="$TMP_ROOT/hook-stray-marker-base"
@@ -568,10 +526,9 @@ test_hook_exempts_linked_worktree_with_stray_marker() {
   pass "fm-turnend-guard: an invalid (empty) marker cannot spoof inclusion; linked worktree stays exempt"
 }
 
-# Anti-spoof under any locale: a NON-ASCII marker id must be REJECTED by the
-# ASCII-only (C-collation) allowlist, so it can never force-include a linked
-# worktree even where the ambient locale's collation would treat it as a letter.
-# Rejection -> git-dir exemption -> the linked worktree stays exempt.
+# A non-ASCII marker id is likewise inert under any locale: the marker has no
+# special meaning any more, so the linked worktree stays exempt regardless of
+# its contents.
 test_hook_exempts_linked_worktree_with_non_ascii_marker() {
   local base dir out status
   base="$TMP_ROOT/hook-nonascii-marker-base"
@@ -1581,21 +1538,21 @@ test_hook_claude_mode_waits_for_late_claim() {
   pass "fm-turnend-guard --claude: bounded claim wait avoids a token-consuming forced continuation"
 }
 
-test_hook_claude_mode_secondmate_reblocks_like_primary() {
+test_hook_claude_mode_stray_marker_reblocks_like_primary() {
   local dir pid out status
-  dir=$(make_secondmate_dir "$TMP_ROOT/hook-claude-sm-reblock")
+  dir=$(make_stray_marker_dir "$TMP_ROOT/hook-claude-sm-reblock")
   : > "$dir/state/task1.meta"
   out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
-  expect_code 2 "$status" "--claude mode must re-block in a marked secondmate home exactly like the main primary"
-  assert_contains "$out" "TURN WOULD END BLIND" "--claude secondmate re-block must carry the blind-turn banner"
+  expect_code 2 "$status" "--claude mode must re-block in a stray-marker home exactly like the main primary"
+  assert_contains "$out" "TURN WOULD END BLIND" "--claude stray-marker re-block must carry the blind-turn banner"
   sleep 60 &
   pid=$!
   record_autoarm_owner "$dir" "$pid"
   out=$(run_hook_claude "$dir" false); status=$?
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  expect_code 0 "$status" "--claude mode must allow a claimed secondmate home"
-  pass "fm-turnend-guard --claude: secondmate home re-blocks unclaimed and allows auto-arm-claimed stops"
+  expect_code 0 "$status" "--claude mode must allow a claimed stray-marker home"
+  pass "fm-turnend-guard --claude: stray-marker home re-blocks unclaimed and allows auto-arm-claimed stops"
 }
 
 test_predicate_healthy_no_inflight
@@ -1619,12 +1576,11 @@ test_hook_x_mode_only_blocks_in_default_mode
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry
-test_hook_blocks_in_secondmate_own_home
-test_hook_silent_in_idle_secondmate_home
-test_hook_secondmate_loop_guard_allows_retry
-test_hook_secondmate_reinvoke_recovery_loop
-test_hook_silent_in_secondmate_child_worktree
-test_hook_blocks_in_treehouse_leased_secondmate_home
+test_hook_blocks_with_stray_marker_in_primary
+test_hook_silent_in_idle_stray_marker_home
+test_hook_stray_marker_loop_guard_allows_retry
+test_hook_stray_marker_reinvoke_recovery_loop
+test_hook_silent_in_stray_marker_child_worktree
 test_hook_exempts_linked_worktree_with_stray_marker
 test_hook_exempts_linked_worktree_with_non_ascii_marker
 test_hook_silent_in_crewmate_worktree
@@ -1661,4 +1617,4 @@ test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
 test_hook_claude_mode_waits_for_late_claim
-test_hook_claude_mode_secondmate_reblocks_like_primary
+test_hook_claude_mode_stray_marker_reblocks_like_primary
