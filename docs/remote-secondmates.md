@@ -160,7 +160,7 @@ A launch after a host has drifted out of readiness fails with the doctor's own g
 Raw launch commands are not accepted for remote secondmates.
 Backends that already refuse secondmate launch, currently Orca and cmux, remain unsupported on the remote host.
 
-Startup liveness recovery relaunches a dead or missing remote second mate through this same command, so recovery passes the same readiness gate rather than a weaker one.
+Recovering a dead or missing remote second mate uses this same command, so recovery passes the same readiness gate rather than a weaker one.
 
 Send routed requests normally:
 
@@ -199,18 +199,16 @@ For a remote route, `tasks-axi mv` first moves the dependency-closed set atomica
 The outbox is then copied to the remote handoff scratch directory and `fm-backlog-receive.sh` atomically ingests every destination-absent key under the remote backlog's own lock.
 Confirmed receipt removes the outbox.
 An existing outbox is the complete retry record, and `--resume-pending` safely re-delivers it.
-Bootstrap retries pending outboxes and emits `SECONDMATE_HANDOFF:` only when one remains.
 There is no two-phase journal and no additional tasks-axi release requirement.
 
 ## Sync, update, and retirement
 
-Locked startup convergence and `bin/fm-config-push.sh` transfer only the declared inherited-material allowlist.
+`bin/fm-config-push.sh` transfers only the declared inherited-material allowlist to live secondmate homes.
 Changed live routes receive a marked instruction to re-read the transferred files.
-The primary records that remote nudge before delivery and retries it during locked startup convergence after a failed send.
+The primary records that remote nudge before delivery and retries it on the next `bin/fm-config-push.sh` run after a failed send.
 Local secondmates retain their generation-specific local pointer contract; remote transfers do not copy those primary-local instruction paths.
 
-`/updatefirstmate` updates each remote code root from its own origin, then guardedly fast-forwards the persistent remote home to that code-root commit.
-Dirty, diverged, unavailable, or otherwise unsafe targets are reported and left untouched.
+See [`updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) for `/updatefirstmate`; it fast-forwards only this firstmate repo's own default branch and no longer touches secondmate homes.
 
 Retire a remote second mate with the normal guarded command:
 
