@@ -46,9 +46,7 @@
 # from an older build or from launchd's own session is still stopped safely as
 # a single process. fm_remote_job_root_is_live is the shared predicate for
 # whether a worker's code root still exists; bin/fm-remote-job-worker.sh uses
-# it to stop itself once its root is pruned, and
-# bin/fm-remote-job-reap-orphans.sh uses it to reap workers that were already
-# orphaned that way.
+# it to stop itself once its root is pruned.
 
 FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
