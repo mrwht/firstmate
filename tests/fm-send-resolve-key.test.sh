@@ -15,13 +15,10 @@
 #      done: line still cannot clear a captain decision.
 #   3. A key that is not open refuses BEFORE anything is sent (mistype safety).
 #   4. A failed or unconfirmed send never closes a key.
-#   5. A local secondmate answer is marked+corr'd yet closes the same way, and
-#      the closing line carries the plain answer, not marker or corr bytes.
-#   6. A remote secondmate answer differs only at the transport layer: the
-#      message crosses the stubbed ssh transport while the close is the same
-#      local ledger append; a failed transport closes nothing.
-#   7. Flag misuse (--key, empty message, explicit backend target) refuses.
-#   8. A key in a reserved namespace (pending-reply-<corr>) only closes when its
+#   5. A local secondmate answer closes the same way as any other target, and
+#      the closing line carries the plain answer.
+#   6. Flag misuse (--key, empty message, explicit backend target) refuses.
+#   7. A key in a reserved namespace (pending-reply-<corr>) only closes when its
 #      note speaks that namespace's vocabulary; the plain "answered: " note used
 #      for ordinary keys would silently fail bin/fm-classify-lib.sh's
 #      reserved-key check and leave a pending-reply-missed escalation open
@@ -30,8 +27,6 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-# shellcheck source=/dev/null
-. "$ROOT/bin/fm-marker-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
@@ -78,15 +73,6 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
-  # Stub ssh transport for the remote-secondmate legs, selected via FM_SSH_BIN.
-  # Records the full remote invocation and exits FM_FAKE_SSH_RC (default 0).
-  cat > "$fb/fake-ssh" <<'SH'
-#!/usr/bin/env bash
-cat > /dev/null
-printf '%s\n' "$*" >> "$FM_SSH_LOG"
-exit "${FM_FAKE_SSH_RC:-0}"
-SH
-  chmod +x "$fb/fake-ssh"
   printf '%s\n' "$fb"
 }
 
@@ -318,8 +304,8 @@ test_multiple_keys_close_together() {
   pass "fm-send --resolve-key: one answer closes each named key and only those"
 }
 
-test_local_secondmate_answer_marked_and_closed() {
-  local dir fb log home rc got out closing
+test_local_secondmate_answer_closed() {
+  local dir fb log home rc out closing
   dir="$TMP_ROOT/sm"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
   home=$(setup_home sm)
@@ -328,132 +314,14 @@ test_local_secondmate_answer_marked_and_closed() {
 
   run_send "$fb" "$home" "$log" fm-domain --resolve-key fleet-split "shard by team"; rc=$?
   expect_code 0 "$rc" "a secondmate answer send should succeed"
-  got=$(cat "$log")
-  case "$got" in
-    "$FM_FROMFIRST_MARK"corr=*) : ;;
-    *) fail "the secondmate answer lost its from-firstmate marker/corr framing" ;;
-  esac
   closing=$(grep -F 'resolved [key=fleet-split]' "$home/state/domain.status" || true)
   [ -n "$closing" ] || fail "the secondmate decision was not closed: $(cat "$home/state/domain.status")"
-  case "$closing" in
-    *corr=*) fail "the closing line leaked the corr token: $closing" ;;
-  esac
-  case "$closing" in
-    *"$FM_FROMFIRST_SEPARATOR"*) fail "the closing line leaked marker bytes" ;;
-  esac
   assert_contains "$closing" "shard by team" "the closing line should carry the plain answer"
   out=$(drain_out "$home")
   if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
     fail "the answered secondmate decision still lists as open: $out"
   fi
-  pass "fm-send --resolve-key: a marked local-secondmate answer closes with the plain answer text"
-}
-
-# Remote secondmate: the answer crosses the (stubbed) ssh transport through the
-# real fm-on.sh + registry route, while the close is the SAME local ledger
-# append as every other target kind - the transport is the only difference.
-setup_remote_home() {  # <name> -> echoes home dir with remote meta + registry
-  local home
-  home=$(setup_home "$1")
-  mkdir -p "$home/data"
-  fm_write_meta "$home/state/rsm.meta" \
-    "window=fm-remote:w1:p1" \
-    "endpoint_task_id=rsm" \
-    "harness=claude" \
-    "kind=secondmate" \
-    "mode=secondmate" \
-    "yolo=off" \
-    "remote_host=remote-mac" \
-    "remote_root=/remote/root" \
-    "remote_backend=herdr" \
-    "remote_herdr_session=fm-remote" \
-    "remote_target=fm-remote:w1:p1"
-  cat > "$home/data/secondmates.md" <<EOF
-- rsm - remote test domain (host: remote-mac; root: /remote/root; home: /remote/home; scope: remote testing; projects: alpha; added 2026-08-02)
-EOF
-  printf '%s\n' "$home"
-}
-
-test_remote_secondmate_answer_closes_locally() {
-  local dir fb log home ssh_log rc out
-  dir="$TMP_ROOT/remote-ok"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; ssh_log="$dir/ssh.log"; : > "$ssh_log"
-  home=$(setup_remote_home remote-ok)
-  printf 'needs-decision [key=upgrade-window]: tonight or the weekend\n' > "$home/state/rsm.status"
-
-  : > "$log"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    FM_SSH_BIN="$fb/fake-ssh" FM_SSH_LOG="$ssh_log" FM_FAKE_SSH_RC=0 \
-    "$SEND" rsm --resolve-key upgrade-window "the weekend, freeze Friday" >/dev/null 2>&1; rc=$?
-  expect_code 0 "$rc" "a remote secondmate answer send should succeed"
-  assert_grep 'fm-remote-entrypoint.sh' "$ssh_log" \
-    "the answer message should cross the remote transport"
-  grep -F 'resolved [key=upgrade-window]: answered: the weekend, freeze Friday' "$home/state/rsm.status" >/dev/null \
-    || fail "the remote answer did not close the local ledger: $(cat "$home/state/rsm.status")"
-  out=$(drain_out "$home")
-  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
-    fail "the answered remote-secondmate decision still lists as open: $out"
-  fi
-  pass "fm-send --resolve-key: a remote-secondmate answer closes the same local ledger, transport-only difference"
-}
-
-# The reported failure: a remote secondmate reply line prepends a
-# "[corr=<hex>]" correlation tag ahead of "[key=...]"
-# (needs-decision [corr=d448ea86afa4bf67] [key=x]: ...). The verb parser used
-# to strip only a leading "[key=...]" token, so the corr tag stayed glued onto
-# the returned verb and the fold never recognized the line as a decision at
-# all - "--resolve-key x" refused with "no open decision with that key" even
-# though the key was right there on the line. This drives the real fm-send
-# over that exact line shape and asserts the answer now succeeds and closes it.
-test_remote_reply_corr_tag_does_not_block_resolve_key() {
-  local dir fb log home ssh_log rc out
-  dir="$TMP_ROOT/remote-corr-tag"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; ssh_log="$dir/ssh.log"; : > "$ssh_log"
-  home=$(setup_remote_home remote-corr-tag)
-  printf 'needs-decision [corr=d448ea86afa4bf67] [key=loan-installment-cadence-amount]: pick the cadence\n' \
-    > "$home/state/rsm.status"
-
-  out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F '[key=loan-installment-cadence-amount]' >/dev/null \
-    || fail "precondition: the corr-tagged remote decision should list as open under its stated key: $out"
-
-  : > "$log"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    FM_SSH_BIN="$fb/fake-ssh" FM_SSH_LOG="$ssh_log" FM_FAKE_SSH_RC=0 \
-    "$SEND" rsm --resolve-key loan-installment-cadence-amount "monthly" >/dev/null 2>&1; rc=$?
-  expect_code 0 "$rc" "answering a corr-tagged remote decision should succeed, not refuse as unknown"
-  grep -F 'resolved [key=loan-installment-cadence-amount]: answered: monthly' "$home/state/rsm.status" >/dev/null \
-    || fail "the closing resolved line is missing:"$'\n'"$(cat "$home/state/rsm.status")"
-
-  out=$(drain_out "$home")
-  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
-    fail "the answered corr-tagged remote decision still lists as open: $out"
-  fi
-  pass "fm-send --resolve-key: a remote reply's leading [corr=...] tag no longer blocks closing its stated key"
-}
-
-test_remote_transport_failure_does_not_close() {
-  local dir fb log home ssh_log rc out
-  dir="$TMP_ROOT/remote-fail"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; ssh_log="$dir/ssh.log"; : > "$ssh_log"
-  home=$(setup_remote_home remote-fail)
-  printf 'blocked [key=quota]: remote host is out of runway\n' > "$home/state/rsm.status"
-
-  : > "$log"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    FM_SSH_BIN="$fb/fake-ssh" FM_SSH_LOG="$ssh_log" FM_FAKE_SSH_RC=1 \
-    "$SEND" rsm --resolve-key quota "quota refreshed, resume" >/dev/null 2>&1; rc=$?
-  [ "$rc" -ne 0 ] || fail "a failed remote transport should exit nonzero"
-  if grep -F 'resolved' "$home/state/rsm.status" >/dev/null; then
-    fail "a failed remote send still closed the decision: $(cat "$home/state/rsm.status")"
-  fi
-  out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F '[key=quota]' >/dev/null \
-    || fail "the remote blocker vanished after a failed transport: $out"
-  pass "fm-send --resolve-key: a failed remote transport never closes the decision"
+  pass "fm-send --resolve-key: a local-secondmate answer closes with the plain answer text"
 }
 
 test_reserved_pending_reply_key_closes_with_prefixed_note() {
@@ -538,9 +406,6 @@ test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
 test_failed_send_does_not_close
 test_multiple_keys_close_together
-test_local_secondmate_answer_marked_and_closed
-test_remote_secondmate_answer_closes_locally
-test_remote_reply_corr_tag_does_not_block_resolve_key
-test_remote_transport_failure_does_not_close
+test_local_secondmate_answer_closed
 test_reserved_pending_reply_key_closes_with_prefixed_note
 test_flag_misuse_refuses

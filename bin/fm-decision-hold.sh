@@ -154,19 +154,15 @@ meta_value() {  # <meta> <key>
 }
 
 origin_open_decisions() {  # <origin-id>
-  local origin=$1 meta="$STATE/$1.meta" status_file="$STATE/$1.status" open kind last verb
+  local origin=$1 meta="$STATE/$1.meta" status_file="$STATE/$1.status" open last verb
   open=$(status_open_decisions "$status_file")
   [ -n "$open" ] || return 0
   [ -f "$meta" ] || { printf '%s' "$open"; return 0; }
-  kind=$(meta_value "$meta" kind)
-  [ -n "$kind" ] || kind=ship
-  if [ "$kind" != secondmate ]; then
-    last=$(last_status_line "$status_file")
-    verb=$(status_line_verb "$last")
-    case "$verb" in
-      done|failed) return 0 ;;
-    esac
-  fi
+  last=$(last_status_line "$status_file")
+  verb=$(status_line_verb "$last")
+  case "$verb" in
+    done|failed) return 0 ;;
+  esac
   printf '%s' "$open"
 }
 

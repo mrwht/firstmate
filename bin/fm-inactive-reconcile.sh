@@ -18,24 +18,21 @@
 # captain-held. It then uses fm-crew-state.sh as the sole current-state source.
 # Only a done or failed state is suspicious enough to create a durable terminal
 # outcome record or wake the supervisor.
-# Working, paused, parked, blocked, unknown, persistent secondmates, and
-# captain-held work retain their existing supervision semantics.
+# Working, paused, parked, blocked, unknown, and captain-held work retain
+# their existing supervision semantics.
 #
-# A terminal-outcomes/<fingerprint>.pending record remains until its upstream
-# receipt is durable.
-# In a secondmate home, that receipt is an idempotent parent-channel status
-# append.
-# In a main home, a presentation-stage record is acknowledged by fm-wake-drain
-# only after its corresponding inactive-outcome wake is handled.
-# A receipt is intentionally independent of .hb-surfaced-* bookkeeping.
+# A terminal-outcomes/<fingerprint>.pending record remains until it is
+# acknowledged by fm-wake-drain, after its corresponding inactive-outcome wake
+# is handled. A receipt is intentionally independent of .hb-surfaced-*
+# bookkeeping.
 #
 # New fm-terminal-outcome.v1 receipts contain schema, fingerprint, task_id,
 # incarnation, state, outcome_key, origin, phase, pr, created_epoch, and
 # notice_emitted; the fingerprint binds the spawn incarnation, task id, terminal
 # state, PR text, and sanitized last status.
-# Pending atomically becomes reported after parent append or presented after
-# main-home acknowledgement. The atomic epoch/cursor marker's mtime gates scans,
-# and its cursor records the last child visited within the aggregate budget.
+# Pending atomically becomes presented after acknowledgement. The atomic
+# epoch/cursor marker's mtime gates scans, and its cursor records the last
+# child visited within the aggregate budget.
 #
 # The scan reads only durable local state and fm-crew-state.sh; it never invokes
 # gh, gh-axi, curl, fm-pr-check.sh, fm-pr-poll.sh, or a state *.check.sh.
@@ -54,8 +51,6 @@ CREW_STATE_BIN="${FM_INACTIVE_CREW_STATE_BIN:-$SCRIPT_DIR/fm-crew-state.sh}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
-# shellcheck source=bin/fm-secondmate-parent-lib.sh
-. "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
@@ -180,31 +175,10 @@ ensure_record() { # <fingerprint> <task> <incarnation> <state> <outcome-key> <or
   mv -f "$tmp" "$RECORD_PENDING" || { rm -f "$tmp"; return 1; }
 }
 
-mark_reported() { # <record>
-  local record=$1 reported
-  [ -f "$record" ] && [ ! -L "$record" ] || return 1
-  reported=${record%.pending}.reported
-  mv -f "$record" "$reported"
-}
-
 queue_key_exists() { # <key>
   local key=$1 queued
   queued=$(fm_wake_queued_keys check 2>/dev/null || true)
   printf '%s\n' "$queued" | grep -Fx -- "$key" >/dev/null 2>&1
-}
-
-queue_notice_once() { # <record> <key> <payload>
-  local record=$1 key=$2 payload=$3 notified
-  notified=$(record_value "$record" notice_emitted)
-  [ "$notified" = 1 ] && return 1
-  if queue_key_exists "$key"; then
-    record_field_set "$record" notice_emitted 1 || return 2
-    return 1
-  fi
-  fm_wake_append check "$key" "$payload" || return 2
-  record_field_set "$record" notice_emitted 1 || return 2
-  printf 'actionable: %s\n' "$payload"
-  return 0
 }
 
 queue_presentation() { # <record> <fingerprint> <payload>
@@ -283,49 +257,8 @@ pr_for_task() { # <meta> <status>
   clean_field "$value"
 }
 
-home_secondmate_id() {
-  local marker="$FM_HOME/.fm-secondmate-home" id
-  if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
-    return 1
-  fi
-  [ -f "$marker" ] && [ ! -L "$marker" ] || return 2
-  [ "$(wc -c < "$marker")" -eq "$(LC_ALL=C tr -d '\0' < "$marker" | wc -c)" ] || return 2
-  id=$(cat "$marker" 2>/dev/null) || return 2
-  valid_id "$id" || return 2
-  printf '%s\n' "$id"
-}
-
-append_once() { # <path> <line>
-  local path=$1 line=$2
-  [ ! -L "$path" ] || return 1
-  mkdir -p "$(dirname "$path")" || return 1
-  if grep -Fqx -- "$line" "$path" 2>/dev/null; then
-    return 0
-  fi
-  printf '%s\n' "$line" >> "$path"
-}
-
-report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>
-  local self=$1 task=$2 state=$3 outcome_key=$4 fingerprint=$5 pr=$6 parent_record destination line
-  parent_record="$FM_HOME/.fm-secondmate-parent"
-  fm_secondmate_parent_record_parse "$parent_record" || return 1
-  case "$FM_SECONDMATE_PARENT_ROUTE" in
-    local)
-      [ -n "$FM_SECONDMATE_PARENT_HOME" ] || return 1
-      destination="$FM_SECONDMATE_PARENT_HOME/state/$self.status"
-      ;;
-    remote)
-      destination="$STATE/parent-replies.status"
-      ;;
-    *) return 1 ;;
-  esac
-  line="$state [key=$outcome_key]: inactive terminal child=$task fingerprint=$fingerprint"
-  [ -z "$pr" ] || line="$line pr=$pr"
-  append_once "$destination" "$line"
-}
-
-reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeout>
-  local id=$1 meta=$2 self=${3:-} timeout=$4 status turn last age state_line state pr incarnation fingerprint outcome_key payload kind state_rc=0
+reconcile_direct_child_locked() { # <id> <meta> <timeout>
+  local id=$1 meta=$2 timeout=$3 status turn last age state_line state pr incarnation fingerprint outcome_key payload kind state_rc=0
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
   kind=$(meta_field "$meta" kind)
   [ "$kind" = secondmate ] && return 0
@@ -346,39 +279,26 @@ reconcile_direct_child_locked() { # <id> <meta> <secondmate-id-or-empty> <timeou
   pr=$(pr_for_task "$meta" "$status")
   incarnation=$(meta_incarnation "$meta")
   fingerprint=$(sha256_text "$incarnation|$id|$state|$pr|$(clean_field "$last")")
-  if [ -n "$self" ]; then
-    outcome_key="inactive-outcome-$self-$id-$state"
-  else
-    outcome_key="inactive-outcome-main-$id-$state"
-  fi
+  outcome_key="inactive-outcome-main-$id-$state"
   ensure_record "$fingerprint" "$id" "$incarnation" "$state" "$outcome_key" direct "upstream" "$pr" || return 1
   [ -n "$RECORD_PENDING" ] || return 0
-  if [ -n "$self" ]; then
-    if report_to_parent "$self" "$id" "$state" "$outcome_key" "$fingerprint" "$pr"; then
-      mark_reported "$RECORD_PENDING" || return 1
-    else
-      payload="inactive terminal outcome needs parent report: child=$id state=$state"
-      queue_notice_once "$RECORD_PENDING" "inactive-reconcile:$fingerprint" "$payload" || true
-    fi
-    return 0
-  fi
   record_phase_set "$RECORD_PENDING" presentation || return 1
   payload="inactive terminal outcome awaiting captain presentation: child=$id state=$state"
   [ -z "$pr" ] || payload="$payload pr=$pr"
   queue_presentation "$RECORD_PENDING" "$fingerprint" "$payload" || true
 }
 
-reconcile_direct_child() { # <id> <meta> <secondmate-id-or-empty> <timeout>
-  local id=$1 meta=$2 self=${3:-} timeout=$4 lock rc=0
+reconcile_direct_child() { # <id> <meta> <timeout>
+  local id=$1 meta=$2 timeout=$3 lock rc=0
   lock=$(fm_meta_lock_path "$meta") || return 1
   fm_lock_acquire_wait "$lock" || return 1
-  reconcile_direct_child_locked "$id" "$meta" "$self" "$timeout" || rc=$?
+  reconcile_direct_child_locked "$id" "$meta" "$timeout" || rc=$?
   fm_lock_release "$lock"
   return "$rc"
 }
 
-scan_pass() { # <cursor> <after|through> <deadline> <secondmate-id-or-empty>
-  local cursor=$1 range=$2 deadline=$3 self=${4:-} meta id remaining rc
+scan_pass() { # <cursor> <after|through> <deadline>
+  local cursor=$1 range=$2 deadline=$3 meta id remaining rc
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
@@ -391,7 +311,7 @@ scan_pass() { # <cursor> <after|through> <deadline> <secondmate-id-or-empty>
     write_scan_marker "$id" || return 1
     remaining=$((deadline - $(date +%s)))
     [ "$remaining" -gt 0 ] || return 3
-    reconcile_direct_child "$id" "$meta" "$self" "$remaining" || {
+    reconcile_direct_child "$id" "$meta" "$remaining" || {
       rc=$?
       [ "$rc" -eq 3 ] && return 3
       return "$rc"
@@ -400,7 +320,7 @@ scan_pass() { # <cursor> <after|through> <deadline> <secondmate-id-or-empty>
 }
 
 scan() {
-  local startup=${1:-0} self='' cursor deadline rc=0 marker_rc=0
+  local startup=${1:-0} cursor deadline rc=0
   mkdir -p "$STATE" "$OUTCOME_DIR" || return 1
   [ ! -L "$OUTCOME_DIR" ] || return 1
   if [ "$startup" != 1 ] && [ "$(scan_marker_age)" -lt "$FM_INACTIVE_RECONCILE_SECS" ]; then
@@ -409,20 +329,10 @@ scan() {
   cursor=$(scan_marker_cursor)
   valid_id "$cursor" || cursor=''
   write_scan_marker "$cursor" || return 1
-  if self=$(home_secondmate_id); then
-    :
-  else
-    marker_rc=$?
-    self=''
-    if [ "$marker_rc" -ne 1 ]; then
-      printf 'actionable: inactive terminal outcomes remain unreconciled: invalid .fm-secondmate-home marker\n'
-      return 0
-    fi
-  fi
   deadline=$(( $(date +%s) + FM_INACTIVE_RECONCILE_BUDGET_SECS ))
-  scan_pass "$cursor" after "$deadline" "$self" || rc=$?
+  scan_pass "$cursor" after "$deadline" || rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$cursor" ]; then
-    scan_pass "$cursor" through "$deadline" "$self" || rc=$?
+    scan_pass "$cursor" through "$deadline" || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     write_scan_marker '' || return 1

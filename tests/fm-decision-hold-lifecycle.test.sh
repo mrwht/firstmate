@@ -390,7 +390,7 @@ EOF
 }
 
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory() {
-  local home id open secondmate
+  local home id open
   home=$(make_home stale-terminal-decision)
   id=sample-terminal-review
   mkdir -p "$home/data/$id"
@@ -408,15 +408,6 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory() {
     || fail "terminal single-owner stale status decision blocked inventory verification"
   run_teardown "$home" "$id" >/dev/null 2> "$home/terminal-teardown.err" \
     || fail "terminal single-owner stale status decision blocked teardown: $(cat "$home/terminal-teardown.err")"
-
-  secondmate=sample-secondmate
-  write_origin_meta "$home" "$secondmate" secondmate
-  printf 'needs-decision [key=route]: choose route A or route B\ndone: heartbeat complete\n' \
-    > "$home/state/$secondmate.status"
-  if run_decisions "$home" complete "$secondmate" --none \
-    > "$home/secondmate-terminal.out" 2> "$home/secondmate-terminal.err"; then
-    fail "secondmate terminal status decision was incorrectly cleared"
-  fi
   pass "terminal single-owner stale status decisions do not block empty inventory"
 }
 
