@@ -94,7 +94,7 @@ For a `--secondmate` spawn, `bin/fm-spawn.sh` populates `MODEL`/`EFFORT` from th
 For a local route, an explicit per-spawn `--harness` flag, positional harness arg, or raw launch command starts clean on model and effort too, unless the caller also passes explicit `--model` or `--effort`.
 A remote route accepts only a verified harness adapter and refuses a raw launch command at the host boundary.
 When the file's tokens do apply, an explicit per-spawn `--model` or `--effort` flag always wins over the file's token for that axis.
-Because this resolves from the file on every spawn, the pin is durable across every respawn (recovery, `/updatefirstmate`, restart) exactly like the harness axis itself - e.g. `config/secondmate-harness` containing `claude opus` keeps a secondmate pinned to Opus even if the primary's own default model later changes.
+Because this resolves from the file on every spawn, the pin is durable across every respawn (recovery, relaunch, restart) exactly like the harness axis itself - e.g. `config/secondmate-harness` containing `claude opus` keeps a secondmate pinned to Opus even if the primary's own default model later changes.
 This is secondmate-only: crewmate/scout model resolution is untouched by this file.
 An optional sibling file `config/secondmate-harness.<id>` pins one specific secondmate id ahead of the global file, same grammar and same fallback philosophy - `docs/configuration.md` "Harness support" owns the full fallback-chain contract.
 The primary looks it up at every `--secondmate` launch for that id; it is never copied into the secondmate's own home, exactly like the existing global file.
@@ -104,7 +104,7 @@ Before a local launch, `fm-spawn.sh --secondmate` locally fast-forwards the home
 That no-fetch path is a purely local fast-forward of tracked files, never an origin fetch, and it never touches the gitignored operational dirs, so a secondmate's backlog, projects, and in-flight work are never disturbed; a linked worktree advances immediately, while a standalone clone that lacks the target receives firstmate updates through `/updatefirstmate`'s origin refresh.
 This fast-forward is a pre-launch-only concern: it runs at the moment `fm-spawn.sh` starts or restarts a secondmate, never against an already-running home, and session start's own network stage runs no comparable sweep.
 A remote launch asks the configured host to fast-forward its persistent home to that host's code-root commit under the same clean and ancestry guards.
-`/updatefirstmate` first updates the remote code root from its own origin, then runs that guarded home sync.
+`/updatefirstmate` only fast-forwards the running firstmate repo's own default branch from `origin`; it never touches project clones or secondmate homes, local or remote.
 SSH exit 255 preserves the route and reports unknown completion; it never triggers local respawn or failover.
 `bin/fm-config-push.sh` propagates the primary's declared inherited local material into every live secondmate home on demand, mid-session: `config/crew-dispatch.json`, `config/crew-harness`, `config/backlog-backend`, `config/backend`, `config/herdr-presentation-spaces`, `config/startup-memory-budget`, and the one shared captain-preference file `data/captain-shared.md`.
 Because these paths are gitignored, that propagation is a separate, primary-authoritative copy independent of the tracked-files fast-forward: it re-converges every live home whether or not its tracked files advanced, and it touches only the declared items.
@@ -142,7 +142,7 @@ The parent records that nudge before delivery, retains it after a failed send, a
 It does not receive a pointer to a primary-local generation path that cannot exist on that host.
 These config values remain defaults and rules only; they must not harden `fm-spawn` to reject a deliberate runtime choice that differs from the configured defaults.
 For already-live secondmates, use `bin/fm-config-push.sh` to push a mid-session inherited local-material change without running the tracked-file fast-forward.
-It uses the same live-home discovery and propagation helper as bootstrap, reports each item as `pushed`, `unchanged`, `skipped`, or `error`, and follows the config-reread contract above for changed or pending generations.
+It uses the live-home discovery and propagation helper (`fm-config-inherit-lib.sh`), reports each item as `pushed`, `unchanged`, `skipped`, or `error`, and follows the config-reread contract above for changed or pending generations.
 `bin/fm-home-seed.sh` refuses to copy a missing or placeholder charter.
 
 Direct seed without a preexisting brief requires `FM_SECONDMATE_CHARTER`.
