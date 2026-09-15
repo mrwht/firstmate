@@ -33,8 +33,15 @@ document:
 # .github/workflows/ci.yml owns broad regression (behavior suite, platform,
 # security, Herdr, tmux, and lifecycle coverage). A full-suite override here
 # would duplicate CI and defeat the targeted Test contract.
+#
+# `bin/fm-test-run.sh --changed` is the same conservative, over-selecting
+# changed-file-to-family map CI's own --lane composition is built from (one
+# owner, docs/fm-test-portable-shards.md): it stays intent-targeted rather than
+# a full-suite walk, but as a deterministic script instead of an agent
+# re-discovering affected files from scratch by trial and error every run.
 commands:
   lint: 'bin/fm-lint.sh'
+  test: 'bin/fm-test-run.sh --changed --base origin/main'
 
 # Keep test evidence out of this repo; it stays in a temp dir instead.
 test:
