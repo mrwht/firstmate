@@ -87,6 +87,114 @@ path_is_ancestor_of() {
   return 1
 }
 
+VALIDATED_HOME=""
+VALIDATION_ERROR=""
+
+validate_operational_dirs() {
+  local abs_home=$1 abs_active_home=$2 abs_root=$3 name dir abs_dir
+  for name in data state config projects; do
+    dir="$abs_home/$name"
+    if [ -L "$dir" ] && [ ! -e "$dir" ]; then
+      VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
+      return 1
+    fi
+    if [ -d "$dir" ]; then
+      abs_dir=$(cd "$dir" && pwd -P) || {
+        VALIDATION_ERROR="secondmate $name directory cannot be resolved"
+        return 1
+      }
+    elif [ -e "$dir" ]; then
+      VALIDATION_ERROR="secondmate $name path is not a directory"
+      return 1
+    else
+      abs_dir="$abs_home/$name"
+    fi
+    if ! path_is_ancestor_of "$abs_home" "$abs_dir"; then
+      VALIDATION_ERROR="secondmate $name directory must resolve inside the secondmate home"
+      return 1
+    fi
+    if [ "$abs_dir" = "$abs_active_home" ] || path_is_ancestor_of "$abs_active_home" "$abs_dir"; then
+      VALIDATION_ERROR="secondmate $name directory cannot be inside the active firstmate home"
+      return 1
+    fi
+    if [ "$abs_dir" = "$abs_root" ] || path_is_ancestor_of "$abs_root" "$abs_dir"; then
+      VALIDATION_ERROR="secondmate $name directory cannot be inside the firstmate repo"
+      return 1
+    fi
+  done
+}
+
+validate_secondmate_home() {
+  local id=$1 home=$2 abs_home abs_active_home abs_root marker_id
+  VALIDATED_HOME=""
+  VALIDATION_ERROR=""
+  abs_home=$(resolved_existing_dir "$home") || {
+    VALIDATION_ERROR="not a directory"
+    return 1
+  }
+  abs_active_home=$(resolved_existing_dir "$FM_HOME") || {
+    VALIDATION_ERROR="active firstmate home is not a directory"
+    return 1
+  }
+  abs_root=$(resolved_existing_dir "$FM_ROOT") || {
+    VALIDATION_ERROR="firstmate repo is not a directory"
+    return 1
+  }
+  if [ "$abs_home" = "/" ]; then
+    VALIDATION_ERROR="secondmate home cannot be the filesystem root"
+    return 1
+  fi
+  if [ "$abs_home" = "$abs_active_home" ]; then
+    VALIDATION_ERROR="secondmate home cannot be the active firstmate home"
+    return 1
+  fi
+  if [ "$abs_home" = "$abs_root" ]; then
+    VALIDATION_ERROR="secondmate home cannot be the firstmate repo"
+    return 1
+  fi
+  if path_is_ancestor_of "$abs_active_home" "$abs_home"; then
+    VALIDATION_ERROR="secondmate home cannot be inside the active firstmate home"
+    return 1
+  fi
+  if path_is_ancestor_of "$abs_root" "$abs_home"; then
+    VALIDATION_ERROR="secondmate home cannot be inside the firstmate repo"
+    return 1
+  fi
+  if path_is_ancestor_of "$abs_home" "$abs_active_home"; then
+    VALIDATION_ERROR="secondmate home cannot be an ancestor of the active firstmate home"
+    return 1
+  fi
+  if path_is_ancestor_of "$abs_home" "$abs_root"; then
+    VALIDATION_ERROR="secondmate home cannot be an ancestor of the firstmate repo"
+    return 1
+  fi
+  validate_operational_dirs "$abs_home" "$abs_active_home" "$abs_root" || return 1
+  if [ -L "$abs_home/$SUB_HOME_MARKER" ]; then
+    VALIDATION_ERROR="secondmate marker must not be a symlink"
+    return 1
+  fi
+  if [ ! -f "$abs_home/$SUB_HOME_MARKER" ]; then
+    VALIDATION_ERROR="not a seeded secondmate home"
+    return 1
+  fi
+  marker_id=$(cat "$abs_home/$SUB_HOME_MARKER" 2>/dev/null || true)
+  if [ "$marker_id" != "$id" ]; then
+    VALIDATION_ERROR="marked for secondmate ${marker_id:-unknown}, expected $id"
+    return 1
+  fi
+  if [ ! -f "$abs_home/AGENTS.md" ]; then
+    VALIDATION_ERROR="not a firstmate home (missing AGENTS.md)"
+    return 1
+  fi
+  if [ ! -d "$abs_home/bin" ]; then
+    # shellcheck disable=SC2034  # VALIDATION_ERROR is read by callers (fm-config-push.sh, fm-stow-cascade.sh) after validate_secondmate_home returns
+    VALIDATION_ERROR="not a firstmate home (missing bin/)"
+    return 1
+  fi
+  # shellcheck disable=SC2034  # VALIDATED_HOME is read by callers (fm-config-push.sh, fm-stow-cascade.sh) after validate_secondmate_home returns
+  VALIDATED_HOME="$abs_home"
+}
+
 # A single fetch refreshes every worktree that shares an object store, so fetch
 # each distinct git-common-dir at most once. Used ONLY by the origin base mode;
 # the local-HEAD sync never fetches.
@@ -128,6 +236,26 @@ dirty_status() {
   else
     git -C "$dir" status --porcelain 2>/dev/null | head -1
   fi
+}
+
+# List this home's LIVE secondmate direct reports from state/<id>.meta records.
+# The meta file is the liveness signal; data/secondmates.md is only the fallback
+# for durable fields such as home= when an older/incomplete meta lacks them.
+# Output is pipe-delimited: id|home|window|meta-file.
+live_secondmate_meta_records() {
+  local state=$1 registry=${2:-} meta id home window
+  [ -d "$state" ] || return 0
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
+    id=$(basename "$meta" .meta)
+    home=$(grep '^home=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    if [ -z "$home" ] && [ -n "$registry" ]; then
+      home=$(secondmate_registry_field "$registry" "$id" home || true)
+    fi
+    window=$(grep '^window=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    printf '%s|%s|%s|%s\n' "$id" "$home" "$window" "$meta"
+  done
 }
 
 # Fast-forward one target to a base. Prints its status line. Sets globals for the

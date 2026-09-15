@@ -883,74 +883,7 @@ phase=$(grep '^phase=' "$PARENT/state/pending-replies/$CORR" | cut -d= -f2-)
 pass "marked send and routed reply complete through the existing parent correlation owner"
 rm -f "$PARENT/state/.wake-queue"
 
-printf '{"revision":2}\n' > "$PARENT/config/crew-dispatch.json"
-printf 'grok\n' > "$PARENT/config/crew-harness"
-set +e
-FM_FAKE_SSH_MODE=inherit-partial remote_env "$ROOT/bin/fm-config-push.sh" \
-  > "$TMP_ROOT/config-partial.out" 2>&1
-config_partial_rc=$?
-set -e
-[ "$config_partial_rc" -ne 0 ] || fail "partial remote inheritance claimed complete convergence"
-assert_grep '"revision":2' "$REMOTE_HOME/config/crew-dispatch.json" "partial inheritance did not apply its first file"
-[ "$(cat "$REMOTE_HOME/config/crew-harness")" != grok ] \
-  || fail "partial inheritance unexpectedly applied the failed file"
 NUDGE_MARKER="$PARENT/state/.secondmate-nudge-pending/ios.pending"
-assert_grep 'remote=1' "$NUDGE_MARKER" "partial inheritance left no durable remote reread marker"
-publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$REMOTE_ROOT/bin/fm-watch.sh"
-remote_env "$ROOT/bin/fm-bootstrap.sh" > "$TMP_ROOT/config-partial-retry.out" \
-  || fail "bootstrap did not converge partial remote inheritance"
-[ "$(cat "$REMOTE_HOME/config/crew-harness")" = grok ] \
-  || fail "bootstrap did not apply the remaining inherited file"
-assert_absent "$NUDGE_MARKER" "bootstrap cleared no remote reread marker after convergence"
-PARTIAL_CONFIG_CORR=$(grep -Eo 'corr=[a-f0-9]{16}' "$HERDR_LOG" | tail -1 | cut -d= -f2-)
-[ -n "$PARTIAL_CONFIG_CORR" ] || fail "bootstrap config reread did not carry a correlation token"
-printf 'done [corr=%s]: converged inherited config re-read\n' "$PARTIAL_CONFIG_CORR" >> "$REMOTE_HOME/state/parent-replies.status"
-remote_env "$ROOT/bin/fm-procevent.sh" start "$SID" >/dev/null \
-  || fail "remote reply source did not capture the converged config acknowledgment"
-PARTIAL_CONFIG_RESULT="$PARENT/state/procevent-inbox/$SID.2.result"
-remote_env "$ROOT/bin/fm-procevent-remote-reply.sh" handle ios 2 "$PARTIAL_CONFIG_RESULT" >/dev/null \
-  || fail "converged remote config acknowledgment was not ingested"
-pass "partial remote inheritance retains reread intent through bootstrap convergence"
-
-rm -f "$TMP_ROOT/inherit.entered" "$TMP_ROOT/inherit.release" "$TMP_ROOT/inherit.payload"
-cat > "$PARENT/data/captain-shared.md" <<'EOF'
-# Shared captain preferences
-This file is main-authoritative and maintained by the main firstmate.
-It is read-only in secondmate homes and must not be edited there.
-Changes return through a marked status document pointer.
-stale concurrent preference
-EOF
-FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-config-push.sh" \
-  > "$TMP_ROOT/config-concurrent-first.out" 2>&1 &
-config_first=$!
-inherit_wait=0
-while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
-  kill -0 "$config_first" 2>/dev/null || fail "first inheritance transaction exited before its blocked write"
-  inherit_wait=$((inherit_wait + 1))
-  # Match the earlier spawn/inheritance wait: a loaded portable runner can
-  # spend several seconds in the remote entrypoint before reaching this write.
-  [ "$inherit_wait" -le 1500 ] || fail "first inheritance transaction never reached its blocked write"
-  sleep 0.02
-done
-cat > "$PARENT/data/captain-shared.md" <<'EOF'
-# Shared captain preferences
-This file is main-authoritative and maintained by the main firstmate.
-It is read-only in secondmate homes and must not be edited there.
-Changes return through a marked status document pointer.
-current concurrent preference
-EOF
-remote_env "$ROOT/bin/fm-bootstrap.sh" > "$TMP_ROOT/config-concurrent-second.out" 2>&1 &
-config_second=$!
-sleep 0.2
-kill -0 "$config_second" 2>/dev/null \
-  || fail "bootstrap bypassed the active remote inheritance transaction"
-touch "$TMP_ROOT/inherit.release"
-wait "$config_first" || fail "first serialized inheritance transaction failed"
-wait "$config_second" || fail "bootstrap inheritance transaction failed after waiting"
-[ "$(tail -1 "$REMOTE_HOME/data/captain-shared.md")" = 'current concurrent preference' ] \
-  || fail "later bootstrap convergence was overwritten by stale inherited bytes"
-pass "config push and bootstrap serialize remote inheritance convergence"
-
 printf 'codex\n' > "$PARENT/config/crew-harness"
 touch "$TMP_ROOT/herdr-send-fail"
 if remote_env "$ROOT/bin/fm-config-push.sh" > "$TMP_ROOT/config-push-fail.out" 2>&1; then
@@ -971,8 +904,8 @@ CONFIG_CORR=$(grep -Eo 'corr=[a-f0-9]{16}' "$HERDR_LOG" | tail -1 | cut -d= -f2-
 printf 'done [corr=%s]: inherited config re-read\n' "$CONFIG_CORR" >> "$REMOTE_HOME/state/parent-replies.status"
 remote_env "$ROOT/bin/fm-procevent.sh" start "$SID" >/dev/null \
   || fail "remote reply source did not capture the config reread acknowledgement"
-CONFIG_RESULT="$PARENT/state/procevent-inbox/$SID.3.result"
-remote_env "$ROOT/bin/fm-procevent-remote-reply.sh" handle ios 3 "$CONFIG_RESULT" >/dev/null \
+CONFIG_RESULT="$PARENT/state/procevent-inbox/$SID.2.result"
+remote_env "$ROOT/bin/fm-procevent-remote-reply.sh" handle ios 2 "$CONFIG_RESULT" >/dev/null \
   || fail "remote config reread acknowledgement was not ingested"
 pass "remote inherited config retains and retries a failed live reread nudge"
 
@@ -996,20 +929,6 @@ resolve_ios_pending() {
 }
 resolve_ios_pending
 
-# Structured fleet state comes from each home's own snapshot. The remote host is
-# explicit, and the local route remains alongside it.
-SNAPSHOT=$(remote_env "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-if ! printf '%s' "$SNAPSHOT" | jq -e '.secondmate_current.records | any(.id == "ios" and .remote == true and .host == "remote-mac" and .provenance.selected == "structured-home")' >/dev/null; then
-  printf 'secondmate projection:\n%s\n' "$(printf '%s' "$SNAPSHOT" | jq '.secondmate_current')" >&2
-  fail "fleet snapshot did not select the remote structured-home projection"
-fi
-printf '%s' "$SNAPSHOT" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == true' >/dev/null \
-  || fail "remote structured observation did not prove the remote home present"
-printf '%s' "$SNAPSHOT" | jq -e '.secondmate_current.records | any(.id == "local" and .remote == false)' >/dev/null \
-  || fail "fleet snapshot lost the existing local secondmate route"
-pass "fleet snapshot projects mixed local and remote structured state"
-rm -f "$PARENT/state/.wake-queue"
-
 # The remote code root updates independently, then the persistent home imports
 # and fast-forwards to that host-local commit without touching project clones.
 REMOTE_SEED="$TMP_ROOT/firstmate-seed"
@@ -1026,77 +945,6 @@ assert_contains "$UPDATE_OUT" 'synced:' "remote update did not report a host-loc
   || fail "remote persistent home did not fast-forward to its code-root commit"
 assert_present "$REMOTE_HOME/REMOTE_UPDATE_PROBE" "remote update did not materialize the code-root commit"
 pass "remote update imports and fast-forwards the persistent home on its configured host"
-
-rm -f "$TMP_ROOT/doctor.repaired"
-: > "$DOCTOR_LOG"
-[ "$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = unreadable ] \
-  || fail "the stopped-server fixture did not make the pre-repair endpoint probe unreadable"
-launches_before_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
-BOOT_REPAIRED=$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-bootstrap.sh")
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable -
-doctor-fixable --fix
-doctor-fixable -' ] || fail "liveness did not check, repair, and re-check readiness before probing"$'\n'"$(cat "$DOCTOR_LOG")"
-assert_not_contains "$BOOT_REPAIRED" 'SECONDMATE_LIVENESS: secondmate ios:' \
-  "successful pre-probe readiness repair produced a liveness failure"
-launches_after_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
-[ "$launches_before_repair" -eq "$launches_after_repair" ] \
-  || fail "readiness repair introduced a new remote relaunch point"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
-  || fail "the endpoint was not probed successfully after readiness repair"
-pass "startup repairs remote readiness before probing without relaunching"
-
-remote_route_meta="$REMOTE_HOME/state/parent-route/ios.meta"
-cp "$remote_route_meta" "$TMP_ROOT/remote-ios-before-liveness-legacy.meta"
-cp "$PARENT/state/ios.meta" "$TMP_ROOT/parent-ios-before-liveness-legacy.meta"
-cp "$PARENT/data/secondmates.md" "$TMP_ROOT/registry-before-liveness-legacy.md"
-cat > "$remote_route_meta" <<EOF
-window=firstmate:fm-ios
-worktree=$REMOTE_HOME
-project=$REMOTE_ROOT
-harness=codex
-kind=secondmate
-backend=tmux
-EOF
-cp "$remote_route_meta" "$TMP_ROOT/remote-ios-liveness-legacy.meta"
-printf 'fm-ios|%s\n' "$REMOTE_HOME" > "$TMUX_STATE"
-tmux_state_before=$(cat "$TMUX_STATE")
-launches_before_legacy=$(grep -c '^tab create' "$HERDR_LOG" || true)
-BOOT_LEGACY=$(remote_env "$ROOT/bin/fm-bootstrap.sh")
-assert_contains "$BOOT_LEGACY" "SECONDMATE_LIVENESS: secondmate ios: skipped: remote endpoint state is unverified on remote-mac" \
-  "liveness accepted an alive legacy remote backend"
-cmp -s "$TMP_ROOT/remote-ios-liveness-legacy.meta" "$remote_route_meta" \
-  || fail "liveness rewrote the alive legacy endpoint metadata"
-cmp -s "$TMP_ROOT/parent-ios-before-liveness-legacy.meta" "$PARENT/state/ios.meta" \
-  || fail "liveness rewrote the parent route metadata for an alive legacy endpoint"
-cmp -s "$TMP_ROOT/registry-before-liveness-legacy.md" "$PARENT/data/secondmates.md" \
-  || fail "liveness changed the registry route for an alive legacy endpoint"
-[ "$(cat "$TMUX_STATE")" = "$tmux_state_before" ] \
-  || fail "liveness changed or killed the alive legacy endpoint"
-launches_after_legacy=$(grep -c '^tab create' "$HERDR_LOG" || true)
-[ "$launches_before_legacy" -eq "$launches_after_legacy" ] \
-  || fail "liveness relaunched an alive legacy endpoint"
-mv -f "$TMP_ROOT/remote-ios-before-liveness-legacy.meta" "$remote_route_meta"
-rm -f "$TMUX_STATE"
-pass "startup reports alive legacy backends without changing their routes"
-
-# Host loss maps to unknown/unavailable and never creates a local replacement.
-launches_before=$(grep -c '^tab create' "$HERDR_LOG" || true)
-rm -rf -- "$PARENT/state/.watch.lock"
-rm -f -- "$PARENT/state/.last-watcher-beat"
-BOOT_UNAVAILABLE=$(FM_FAKE_SSH_MODE=unreachable remote_env "$ROOT/bin/fm-bootstrap.sh")
-assert_contains "$BOOT_UNAVAILABLE" 'SECONDMATE_LIVENESS: secondmate ios: skipped: remote host unavailable or endpoint state unknown' \
-  "bootstrap did not preserve an unreachable remote endpoint as unknown"
-UNAVAILABLE=$(FM_FAKE_SSH_MODE=unreachable remote_env "$ROOT/bin/fm-fleet-snapshot.sh" --json)
-printf '%s' "$UNAVAILABLE" | jq -e '.secondmate_current.records | any(.id == "ios" and .current.state == "unknown")' >/dev/null \
-  || fail "unreachable remote host was not projected unknown"
-printf '%s' "$UNAVAILABLE" | jq -e '.tasks[] | select(.id == "ios") | .paths.home.present == null' >/dev/null \
-  || fail "unreachable remote home presence was not projected unknown"
-rm -f "$PARENT/state/.wake-queue"
-launches_after=$(grep -c '^tab create' "$HERDR_LOG" || true)
-[ "$launches_before" -eq "$launches_after" ] || fail "unreachable projection attempted a replacement launch"
-assert_present "$PARENT/state/ios.meta" "unreachable readiness removed the parent route metadata"
-assert_grep '- ios ' "$PARENT/data/secondmates.md" "unreachable readiness removed the registry route"
-pass "unreachable remote state remains unknown with no local respawn or failover"
 
 # Retirement delegates its safety check to the remote home. An in-flight child
 # record refuses cleanup and preserves both machines' durable routes.
@@ -1125,10 +973,6 @@ assert_present "$PARENT/state/ios.meta" "refused remote retirement removed paren
 assert_grep '- ios ' "$PARENT/data/secondmates.md" "refused remote retirement removed the route"
 rm -f "$PARENT/state/procevent"
 mkdir "$PARENT/state/procevent"
-remote_env "$ROOT/bin/fm-bootstrap.sh" >/dev/null \
-  || fail "bootstrap failed while repairing a preserved remote reply source"
-assert_present "$PARENT/state/procevent/remote-reply-ios.source" \
-  "bootstrap did not repair reply registration after retirement rollback"
 resolve_ios_pending
 rm -f "$REMOTE_HOME/state/child.meta"
 mkdir -p "$PARENT/data/handoff"
