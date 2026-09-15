@@ -2339,18 +2339,12 @@ test_bootstrap_isolates_incomplete_poll_migration() {
   fm_pr_poll_prepare "$state" z-healthy github https://github.com/o/r/pull/13 github.com o/r 13 "$POLL" \
     || fail "could not prepare healthy poll for migration isolation"
   fm_pr_poll_publish_prepared || fail "could not publish healthy poll for migration isolation"
-  fm_write_meta "$state/secondmate-a.meta" \
-    'window=firstmate:fm-secondmate-a' \
-    'kind=secondmate' \
-    'harness=codex' \
-    'backend=tmux'
   printf 'FMX_PAIRING_TOKEN=test-token\n' > "$dir/home/.env"
   mkdir -p "$dir/home/projects"
   fm_fake_exit0 "$fakebin" curl jq
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
-  *' list-windows '*) printf 'fm-secondmate-a\n' ;;
   *' display-message '*) printf 'node\n' ;;
 esac
 SH
@@ -2381,10 +2375,6 @@ SH
     "$state/.pr-check-migration.log" "isolated bootstrap migration did not publish a durable repair diagnostic"
   assert_grep 'migration did not complete safely' "$dir/bootstrap.err" \
     "isolated bootstrap migration did not surface its incomplete status"
-  assert_grep 'SECONDMATE_SYNC: secondmate secondmate-a: skipped:' "$dir/bootstrap.out" \
-    "incomplete poll migration suppressed secondmate sync"
-  assert_grep 'SECONDMATE_LIVENESS: secondmate secondmate-a: skipped: existing endpoint has ambiguous agent process' "$dir/bootstrap.out" \
-    "incomplete poll migration suppressed persistent supervisor recovery"
   assert_grep 'FMX: X mode on - relay poll armed' "$dir/bootstrap.out" \
     "incomplete poll migration suppressed X mention setup"
   fmx_poll_shim_valid "$state/x-watch.check.sh" "$dir/home" "$dir/root" \

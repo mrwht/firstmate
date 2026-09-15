@@ -1,14 +1,14 @@
 # shellcheck shell=bash
 # Shared fast-forward machinery for firstmate self-sync.
-# Usage: . bin/fm-ff-lib.sh   (after FM_ROOT and FM_HOME are set)
+# Usage: . bin/fm-ff-lib.sh
 #
 # This is the one implementation of "advance a firstmate checkout to a base by a
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
-#   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
-#     on startup) follows the PRIMARY checkout's current default-branch commit:
-#     base_mode is that local commit, with NO fetch and no origin dependency.
+#   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch) follows the
+#     PRIMARY checkout's current default-branch commit: base_mode is that
+#     local commit, with NO fetch and no origin dependency.
 #
 # A linked-worktree secondmate home already holds the primary's commit in the
 # shared object store, so its local-HEAD sync is a purely local fast-forward that
@@ -25,6 +25,9 @@
 # shared default branch or any other worktree's checkout.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
+# fm-spawn.sh's --secondmate path calls secondmate_registry_* functions without
+# sourcing this lib itself, relying on this transitive source; keep it even
+# though ff_target no longer uses it directly.
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 
@@ -184,9 +187,11 @@ validate_secondmate_home() {
     return 1
   fi
   if [ ! -d "$abs_home/bin" ]; then
+    # shellcheck disable=SC2034  # VALIDATION_ERROR is read by callers (fm-config-push.sh, fm-stow-cascade.sh) after validate_secondmate_home returns
     VALIDATION_ERROR="not a firstmate home (missing bin/)"
     return 1
   fi
+  # shellcheck disable=SC2034  # VALIDATED_HOME is read by callers (fm-config-push.sh, fm-stow-cascade.sh) after validate_secondmate_home returns
   VALIDATED_HOME="$abs_home"
 }
 
@@ -268,6 +273,7 @@ live_secondmate_meta_records() {
 #                  it is skipped rather than fetched.
 # Guards are identical in both modes: ff-only (never force/merge/stash); skip a
 # dirty, diverged, or wrong-branch target and leave its work untouched.
+# shellcheck disable=SC2034  # FF_STATUS/FF_INSTR are read by callers (fm-spawn.sh, fm-update.sh) after ff_target returns
 FF_STATUS=""
 FF_INSTR=""
 ff_target() {
@@ -350,7 +356,9 @@ ff_target() {
     return 0
   fi
   after=$(git -C "$dir" rev-parse --short HEAD)
+  # shellcheck disable=SC2034  # FF_STATUS/FF_INSTR are read by callers (fm-spawn.sh, fm-update.sh) after ff_target returns
   FF_STATUS="updated"
+  # shellcheck disable=SC2034
   FF_INSTR="$instr"
   if [ -n "$instr" ]; then
     echo "$label: updated $before..$after (instructions changed: $instr)"
@@ -358,63 +366,4 @@ ff_target() {
     echo "$label: updated $before..$after"
   fi
   return 0
-}
-
-# Sweep accumulators. The caller resets both before a sweep and reads
-# FF_NUDGE_WINDOWS after.
-FF_NUDGE_WINDOWS=""
-FF_SEEN_HOMES=""
-
-# Validate and fast-forward one secondmate home, accumulating its stable
-# fm-<id> task selector into FF_NUDGE_WINDOWS when it should be live-converged.
-# Args:
-#   id home window base_mode nudge_requires_instr
-# A home is nudged only when it ACTUALLY advanced (FF_STATUS=updated) and has a
-# live window. With nudge_requires_instr=yes the advance must also have changed
-# the instruction surface (FF_INSTR non-empty): an already-current home, or one
-# whose only change was non-instruction tracked files, is left undisturbed. The
-# firstmate repo itself (FM_ROOT) is never processed as its own secondmate, and
-# each resolved home is processed at most once.
-process_secondmate() {
-  local id=$1 home=$2 window=${3:-} base_mode=$4 nudge_requires_instr=${5:-no} home_real fm_root_real
-  [ -n "$id" ] || return 0
-  [ -n "$home" ] || return 0
-  fm_root_real=$(resolve_path "$FM_ROOT")
-  home_real=$(resolve_path "$home")
-  [ "$home_real" != "$fm_root_real" ] || return 0
-  if ! validate_secondmate_home "$id" "$home"; then
-    echo "secondmate $id: skipped: unsafe home: $VALIDATION_ERROR"
-    return 0
-  fi
-  home_real="$VALIDATED_HOME"
-  case " $FF_SEEN_HOMES " in
-    *" $home_real "*) return 0 ;;
-  esac
-  FF_SEEN_HOMES="$FF_SEEN_HOMES $home_real"
-
-  ff_target "$home_real" "secondmate $id" "$base_mode" yes yes
-  if [ "$FF_STATUS" = "updated" ] && [ -n "$window" ]; then
-    if [ "$nudge_requires_instr" = yes ] && [ -z "$FF_INSTR" ]; then
-      return 0
-    fi
-    FF_NUDGE_WINDOWS="$FF_NUDGE_WINDOWS fm-$id"
-    if [ "$nudge_requires_instr" = yes ] && [ -n "$FF_INSTR" ] \
-      && type fm_ff_after_instruction_update >/dev/null 2>&1; then
-      fm_ff_after_instruction_update "$id" "$home_real" "$window" "$FF_INSTR"
-    fi
-  fi
-}
-
-# Sweep this home's LIVE secondmate direct reports - state/<id>.meta files with
-# kind=secondmate - fast-forwarding each to base_mode. Passes base_mode and
-# nudge_requires_instr through to process_secondmate. Accumulates into
-# FF_NUDGE_WINDOWS / FF_SEEN_HOMES, which the caller resets before and reads after.
-# The registry argument is only for home= fallback on older or incomplete meta records.
-sweep_live_secondmate_metas() {
-  local state=$1 base_mode=$2 nudge_requires_instr=${3:-no} registry=${4:-$FM_HOME/data/secondmates.md} id home window meta
-  [ -d "$state" ] || return 0
-  while IFS='|' read -r id home window meta; do
-    if grep -q '^remote_host=.' "$meta" 2>/dev/null; then continue; fi
-    process_secondmate "$id" "$home" "$window" "$base_mode" "$nudge_requires_instr"
-  done < <(live_secondmate_meta_records "$state" "$registry")
 }

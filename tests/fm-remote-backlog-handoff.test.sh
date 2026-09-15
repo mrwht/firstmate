@@ -299,7 +299,7 @@ assert_grep 'stale-lock-item' "$REMOTE/data/backlog.md" "stale-lock receipt lost
 assert_absent "$REMOTE/data/backlog.md.lock" "stale destination lock survived successful receipt"
 pass "receiver removes one proven dead stale lock and retries once"
 
-# Unreachable delivery keeps the backlog-format outbox visible to bootstrap.
+# Unreachable delivery keeps the backlog-format outbox on disk for a later retry.
 write_backlog '- [ ] pending-offline - waits for the remote Mac (repo: alpha)'
 set +e
 FM_FAKE_SSH_MODE=unreachable handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios pending-offline \
@@ -307,13 +307,9 @@ FM_FAKE_SSH_MODE=unreachable handoff_env "$ROOT/bin/fm-backlog-handoff.sh" ios p
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "offline handoff claimed success"
-bootstrap_out=$(FM_HOME="$PARENT" FM_ROOT_OVERRIDE="$ROOT" FM_BACKEND=tmux \
-  FM_BOOTSTRAP_DETECT_ONLY=1 "$ROOT/bin/fm-bootstrap.sh" 2>&1)
-assert_contains "$bootstrap_out" 'SECONDMATE_HANDOFF: secondmate ios: pending delivery: 1 item(s)' \
-  "bootstrap did not surface the pending outbox count"
 handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending >/dev/null \
-  || fail "pending bootstrap-visible outbox did not later converge"
-pass "bootstrap detects pending outbox handoffs without a journal"
+  || fail "pending outbox did not later converge"
+pass "an unreachable handoff's outbox converges on retry"
 
 write_backlog '- [ ] route-race - remains dispatchable through retirement (repo: alpha)'
 registry_lock="$PARENT/state/.secondmate-registry.lock"
@@ -353,14 +349,12 @@ assert_grep 'route-race' "$PARENT/data/backlog.md" "route retirement stranded qu
 assert_absent "$PARENT/data/handoff/ios.outbox.md" "route retirement left an orphaned handoff outbox"
 pass "route classification serializes with retirement before staging"
 
-# With no handoff directory or remote route, bootstrap neither invokes SSH nor
-# emits a remote handoff line.
+# With no handoff directory or remote route, bootstrap never invokes SSH.
 FRESH="$TMP_ROOT/fresh"
 mkdir -p "$FRESH/data" "$FRESH/state"
 : > "$SSH_COUNT"
-fresh_out=$(FM_HOME="$FRESH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKEND=tmux \
-  FM_BOOTSTRAP_DETECT_ONLY=1 "$ROOT/bin/fm-bootstrap.sh" 2>&1)
-assert_not_contains "$fresh_out" 'SECONDMATE_HANDOFF:' "unconfigured bootstrap emitted a remote handoff diagnostic"
+FM_HOME="$FRESH" FM_ROOT_OVERRIDE="$ROOT" FM_BACKEND=tmux \
+  FM_BOOTSTRAP_DETECT_ONLY=1 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
 [ ! -s "$SSH_COUNT" ] || fail "unconfigured bootstrap touched SSH"
 pass "unconfigured bootstrap has no remote handoff behavior"
 

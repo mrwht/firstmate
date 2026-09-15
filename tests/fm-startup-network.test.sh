@@ -336,7 +336,7 @@ EOF
   report=$(run_stage "$home" "$root" report)
   assert_contains "$report" "NETWORK_CHECKS: the deferred check worker stopped before publishing" \
     "an abandoned run still read as in progress: $report"
-  assert_contains "$report" "dead-secondmate relaunch" \
+  assert_contains "$report" "project clone refresh" \
     "the abandoned run did not name the checks that never completed"
 
   # A record older than the whole aggregate bound is abandoned even when its pid
@@ -559,14 +559,14 @@ EOF
 
   FM_STARTUP_NETWORK_TIMEOUT=1 FM_SESSION_START_TIMEOUT=2 \
     FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_BOOTSTRAP_SLEEP=20 \
-    FM_FAKE_TIMING_PHASE=secondmate-liveness FM_FAKE_TIMING_DETAIL='mate-a@host-one' \
+    FM_FAKE_TIMING_PHASE=clone-fetch FM_FAKE_TIMING_DETAIL='dotfiles@host-one' \
     run_stage "$home" "$root" run --locked 1
 
   [ "$(sed -n 's/^state=//p' "$home/state/.startup-network.status")" = timeout ] \
     || fail "the bounded run did not record itself as timed out"
   report_out=$(run_stage "$home" "$root" report)
   assert_contains "$report_out" "hit the 1s bound" "the bound stopped being reported"
-  assert_contains "$report_out" "secondmate-liveness mate-a@host-one" \
+  assert_contains "$report_out" "clone-fetch dotfiles@host-one" \
     "a timed-out run discarded the partial timings its sweeps had already recorded"
   pass "fm-startup-network: a timed-out run still publishes the partial timings it recorded"
 }
@@ -583,7 +583,7 @@ $rec
 EOF
   printf '%s\n' $$ > "$home/state/.lock"
 
-  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_TIMING_PHASE=secondmate-sync \
+  FM_FAKE_BOOTSTRAP_LOG="$log" FM_FAKE_TIMING_PHASE=clone-fetch \
     FM_FAKE_TIMING_DETAIL="ssh -i /key host	v1	forged	0	9999
 GITHUB_TOKEN=ghp_supersecretvalue" \
     run_stage "$home" "$root" run --locked 1
@@ -602,7 +602,7 @@ GITHUB_TOKEN=ghp_supersecretvalue" \
 
   # The step itself is still measured - only its untrustworthy label is refused,
   # so a sweep that mislabels itself still shows up as time spent.
-  assert_grep 'secondmate-sync' "$home/state/.startup-network.timings" \
+  assert_grep 'clone-fetch' "$home/state/.startup-network.timings" \
     "refusing the label also discarded the measurement"
 
   report_out=$(run_stage "$home" "$root" report)

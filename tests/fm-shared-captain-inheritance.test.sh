@@ -311,36 +311,6 @@ EOF
   pass "spawn convergence point propagates data/captain-shared.md from FM_DATA_OVERRIDE"
 }
 
-test_bootstrap_convergence_point_copies_shared_file() {
-  local rec w root home sm fakebin data_override out
-  rec=$(new_git_world bootstrap-point)
-  IFS='|' read -r w root home sm <<EOF
-$rec
-EOF
-  data_override="$w/primary-data-override"
-  mkdir -p "$data_override"
-  write_shared "$data_override/captain-shared.md" "shared from bootstrap override"
-  {
-    printf 'window=firstmate:fm-sm\n'
-    printf 'kind=secondmate\n'
-  } > "$home/state/sm.meta"
-  printf -- '- sm - fixture secondmate (home: %s; scope: fixture; projects: sample; added 2026-07-16)\n' "$sm" \
-    > "$data_override/secondmates.md"
-  fakebin=$(make_fake_spawn_toolchain "$w")
-  add_bootstrap_compatible_tools "$fakebin"
-
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
-    FM_DATA_OVERRIDE="$data_override" \
-    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-
-  assert_not_contains "$out" "SECONDMATE_SYNC: secondmate sm: skipped: inheritance failed" \
-    "bootstrap inheritance should succeed"
-  cmp -s "$data_override/captain-shared.md" "$sm/data/captain-shared.md" \
-    || fail "bootstrap convergence point did not copy shared captain preferences from FM_DATA_OVERRIDE"
-  assert_shared_readonly "$sm/data/captain-shared.md"
-  pass "bootstrap convergence point propagates data/captain-shared.md from FM_DATA_OVERRIDE"
-}
-
 test_config_push_convergence_point_updates_changed_source() {
   local rec w root home sm data_override out
   rec=$(new_git_world config-push-point)
@@ -397,7 +367,6 @@ test_drift_quarantine_collision_and_repeated_convergence
 test_missing_source_mirrors_absence_without_losing_local_bytes
 test_unsafe_artifacts_and_failure_restore_readonly_mode
 test_spawn_convergence_point_copies_shared_file
-test_bootstrap_convergence_point_copies_shared_file
 test_config_push_convergence_point_updates_changed_source
 test_session_start_digest_labels_shared_file_and_read_once_rule
 

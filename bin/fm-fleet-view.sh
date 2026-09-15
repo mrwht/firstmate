@@ -89,8 +89,5 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     "| ID | Title | Repo | Kind | Blocked By | Artifact |",
     "| --- | --- | --- | --- | --- | --- |",
     (.backlog.records[] | select(.state == "done") | backlog_row(.))
-   end),
-  "",
-  "## Secondmates",
-  .secondmate_guidance.note
+   end)
 '

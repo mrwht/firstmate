@@ -1107,19 +1107,6 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-run_bootstrap() {
-  local w=$1 fakebin log=${2:-}
-  fakebin=$(make_fake_toolchain "$w")
-  if [ -n "$log" ]; then
-    PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-      FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
-      "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
-  else
-    PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-      FM_SEND_SETTLE=0 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null
-  fi
-}
-
 run_config_push() {
   local w=$1 fakebin log=${2:-}
   fakebin=$(make_fake_toolchain "$w")
@@ -1212,148 +1199,6 @@ assert_no_reread_retry_stages() {
   done
 }
 
-# The sweep pushes the primary's declared inherited config into a live home,
-# re-converges it when the primary changes it, and mirrors absence when the
-# primary clears it - all while never inheriting secondmate-harness.
-test_bootstrap_sweep_propagates_and_reconverges() {
-  local w c1
-  w=$(new_world boot-prop)
-  c1=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$c1"
-
-  # Initial push: primary crew-harness=codex, secondmate-harness=grok (must NOT flow).
-  printf '{"default":{"harness":"codex"}}\n' > "$w/home/config/crew-dispatch.json"
-  printf 'codex\n' > "$w/home/config/crew-harness"
-  printf 'manual\n' > "$w/home/config/backlog-backend"
-  printf 'tmux\n' > "$w/home/config/backend"
-  : > "$w/home/config/trace-context"
-  printf 'grok\n' > "$w/home/config/secondmate-harness"
-  run_bootstrap "$w" >/dev/null
-  [ "$(cat "$w/sm/config/crew-harness" 2>/dev/null)" = codex ] \
-    || fail "sweep: crew-harness not pushed into the live home"
-  [ "$(cat "$w/sm/config/crew-dispatch.json" 2>/dev/null)" = '{"default":{"harness":"codex"}}' ] \
-    || fail "sweep: crew-dispatch.json not pushed into the live home"
-  [ "$(cat "$w/sm/config/backlog-backend" 2>/dev/null)" = manual ] \
-    || fail "sweep: backlog-backend not pushed into the live home"
-  [ "$(cat "$w/sm/config/backend" 2>/dev/null)" = tmux ] \
-    || fail "sweep: backend not pushed into the live home"
-  [ ! -e "$w/sm/config/trace-context" ] \
-    || fail "sweep: trace-context changed a legacy live home before relaunch"
-  [ -e "$w/sm/config/secondmate-harness" ] \
-    && fail "sweep: secondmate-harness was inherited (must not be)"
-
-  # Re-converge: primary changes inherited config values; the home follows on the next sweep.
-  printf '{"default":{"harness":"claude"}}\n' > "$w/home/config/crew-dispatch.json"
-  printf 'claude\n' > "$w/home/config/crew-harness"
-  printf 'tasks-axi\n' > "$w/home/config/backlog-backend"
-  printf 'zellij\n' > "$w/home/config/backend"
-  run_bootstrap "$w" >/dev/null
-  [ "$(cat "$w/sm/config/crew-harness" 2>/dev/null)" = claude ] \
-    || fail "sweep: home did not re-converge to the primary's new crew-harness"
-  [ "$(cat "$w/sm/config/crew-dispatch.json" 2>/dev/null)" = '{"default":{"harness":"claude"}}' ] \
-    || fail "sweep: home did not re-converge to the primary's new crew-dispatch.json"
-  [ "$(cat "$w/sm/config/backlog-backend" 2>/dev/null)" = tasks-axi ] \
-    || fail "sweep: home did not re-converge to the primary's new backlog-backend"
-  [ "$(cat "$w/sm/config/backend" 2>/dev/null)" = zellij ] \
-    || fail "sweep: home did not re-converge to the primary's new backend"
-
-  # Mirror absence: primary clears inherited config; the home's copies are removed.
-  rm -f "$w/home/config/crew-dispatch.json" "$w/home/config/crew-harness" \
-    "$w/home/config/backlog-backend" "$w/home/config/backend"
-  run_bootstrap "$w" >/dev/null
-  [ -e "$w/sm/config/crew-dispatch.json" ] \
-    && fail "sweep: home crew-dispatch.json not removed after the primary cleared it"
-  [ -e "$w/sm/config/crew-harness" ] \
-    && fail "sweep: home crew-harness not removed after the primary cleared it"
-  [ -e "$w/sm/config/backlog-backend" ] \
-    && fail "sweep: home backlog-backend not removed after the primary cleared it"
-  [ -e "$w/sm/config/backend" ] \
-    && fail "sweep: home backend not removed after the primary cleared it"
-  pass "B7 bootstrap sweep pushes, re-converges, and mirrors absence; never inherits secondmate-harness"
-}
-
-# Convergence is independent of the tracked-files fast-forward: a home already
-# current on tracked files still receives a config change.
-test_bootstrap_sweep_propagates_when_tracked_current() {
-  local w head
-  w=$(new_world boot-prop-current)
-  head=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$head"   # already on the primary's HEAD (ff is a no-op)
-
-  printf '{"default":{"harness":"codex"}}\n' > "$w/home/config/crew-dispatch.json"
-  printf 'codex\n' > "$w/home/config/crew-harness"
-  printf 'manual\n' > "$w/home/config/backlog-backend"
-  printf 'tmux\n' > "$w/home/config/backend"
-  run_bootstrap "$w" >/dev/null
-  [ "$(cat "$w/sm/config/crew-dispatch.json" 2>/dev/null)" = '{"default":{"harness":"codex"}}' ] \
-    || fail "crew-dispatch.json did not propagate to a tracked-current home"
-  [ "$(cat "$w/sm/config/crew-harness" 2>/dev/null)" = codex ] \
-    || fail "config did not propagate to a tracked-current home"
-  [ "$(cat "$w/sm/config/backlog-backend" 2>/dev/null)" = manual ] \
-    || fail "backlog-backend did not propagate to a tracked-current home"
-  [ "$(cat "$w/sm/config/backend" 2>/dev/null)" = tmux ] \
-    || fail "backend did not propagate to a tracked-current home"
-  pass "B8 bootstrap sweep propagates config even when the home's tracked files are already current"
-}
-
-test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home() {
-  local w out status
-  w=$(new_world boot-stale-dispatch no)
-  add_sm_worktree "$w" sm "$(git -C "$w/main" rev-parse HEAD)"
-  printf 'local divergence\n' >> "$w/sm/README.md"
-  git -C "$w/sm" add README.md
-  git -C "$w/sm" commit -qm local
-  printf 'config/crew-dispatch.json\n' >> "$w/main/.gitignore"
-  git -C "$w/main" add .gitignore
-  git -C "$w/main" commit -qm c2
-
-  printf '{"default":{"harness":"codex"}}\n' > "$w/home/config/crew-dispatch.json"
-  printf 'codex\n' > "$w/home/config/crew-harness"
-  printf 'manual\n' > "$w/home/config/backlog-backend"
-  out=$(run_bootstrap "$w")
-
-  assert_contains "$out" "SECONDMATE_SYNC: secondmate sm: skipped: diverged from" \
-    "stale dispatch: expected fast-forward skip"
-  [ ! -e "$w/sm/config/crew-dispatch.json" ] \
-    || fail "stale dispatch: crew-dispatch.json was copied before the home ignored it"
-  [ "$(cat "$w/sm/config/crew-harness" 2>/dev/null)" = codex ] \
-    || fail "stale dispatch: existing ignored config stopped propagating"
-  [ "$(cat "$w/sm/config/backlog-backend" 2>/dev/null)" = manual ] \
-    || fail "stale dispatch: backlog backend stopped propagating"
-  status=$(git -C "$w/sm" status --porcelain -- config/crew-dispatch.json)
-  [ -z "$status" ] || fail "stale dispatch: crew-dispatch.json dirtied the home: $status"
-  pass "B9 bootstrap sweep defers new inherited config until the home ignores it"
-}
-
-# The primary bootstrap always materializes the startup-memory default, so an
-# otherwise empty inherited surface converges that one visible value while
-# ordinary tracked-file fast-forward behavior remains unchanged.
-test_bootstrap_sweep_materializes_and_inherits_memory_default() {
-  local w c1
-  w=$(new_world boot-noop)
-  c1=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$c1"
-  # Advance the primary so the sweep has a real fast-forward to perform.
-  printf 'v2\n' > "$w/main/AGENTS.md"
-  git -C "$w/main" add -A
-  git -C "$w/main" commit -qm c2
-  local head
-  head=$(git -C "$w/main" rev-parse HEAD)
-
-  run_bootstrap "$w" >/dev/null
-
-  [ -e "$w/sm/config/crew-dispatch.json" ] && fail "default-only sweep created a home crew-dispatch.json"
-  [ -e "$w/sm/config/crew-harness" ] && fail "default-only sweep created a home crew-harness"
-  [ -e "$w/sm/config/backend" ] && fail "default-only sweep created a home backend"
-  [ "$(cat "$w/home/config/startup-memory-budget")" = 7500 ] \
-    || fail "primary bootstrap did not materialize the startup-memory default"
-  [ "$(cat "$w/sm/config/startup-memory-budget")" = 7500 ] \
-    || fail "default-only sweep did not converge startup-memory-budget"
-  [ "$(git -C "$w/sm" rev-parse HEAD)" = "$head" ] \
-    || fail "default-only sweep did not still fast-forward the tracked files"
-  pass "B10 bootstrap sweep materializes and inherits the startup-memory default while fast-forwarding"
-}
-
 # config/backend: present and absent primary state converges exactly.
 test_backend_inheritance_present_and_absent() {
   local w head out err status instruction
@@ -1443,43 +1288,6 @@ test_presentation_inheritance_default_on_and_opt_out() {
   verdict=$(sm_presentation_verdict "$w/sm/config")
   [ "$verdict" = on ] || fail "a legacy primary opt-in file left the secondmate projection $verdict"
   pass "B12c presentation inheritance: the primary default converges on, and only an explicit opt-out propagates off"
-}
-
-test_bootstrap_sweep_surfaces_config_propagation_failure() {
-  local w c1 out fail_line
-  w=$(new_world boot-prop-fail)
-  c1=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$c1"
-  mkdir -p "$w/sm/config/crew-harness"
-
-  out=$(run_bootstrap "$w")
-
-  fail_line=$(printf '%s\n' "$out" | grep '^SECONDMATE_SYNC: secondmate sm: skipped: inheritance failed' || true)
-  [ -n "$fail_line" ] || fail "bootstrap did not surface inheritance propagation failure (got: $out)"
-  [ -d "$w/sm/config/crew-harness" ] || fail "failed propagation removed the wrong path"
-  pass "B11 bootstrap sweep surfaces config propagation failures"
-}
-
-test_bootstrap_rereads_after_partial_propagation() {
-  local w head log out instruction pointer
-  w=$(new_world boot-prop-partial)
-  head=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$head"
-  printf '{"default":{"harness":"codex"}}\n' > "$w/home/config/crew-dispatch.json"
-  printf 'invalid shared header\n' > "$w/home/data/captain-shared.md"
-  log="$w/boot-prop-partial.tmux.log"
-
-  out=$(run_bootstrap "$w" "$log")
-  assert_contains "$out" "SECONDMATE_SYNC: secondmate sm: skipped: inheritance failed" \
-    "partial bootstrap propagation did not remain diagnostic"
-  [ "$(cat "$w/sm/config/crew-dispatch.json")" = '{"default":{"harness":"codex"}}' ] \
-    || fail "partial bootstrap propagation did not retain the completed config write"
-  instruction=$(reread_instruction_path "$w/sm") || fail "partial bootstrap reread instruction missing"
-  assert_present "$instruction" "partial bootstrap propagation did not write a reread instruction"
-  pointer="CONFIG_REREAD: $(reread_instruction_path "$w/sm")"
-  assert_contains "$(cat "$log")" "$pointer" \
-    "partial bootstrap propagation did not route the instruction pointer"
-  pass "B11 bootstrap rereads completed config writes after partial propagation"
 }
 
 test_config_push_propagates_reports_without_ff_or_nudge() {
@@ -2338,29 +2146,8 @@ test_config_reread_skips_when_unchanged_and_reads_after_push() {
   pass "B17 config reread skips unchanged homes and reads destination post-write bytes"
 }
 
-test_config_reread_bootstrap_path_and_spawn_flexibility() {
-  local w head log out fakebin sm launchlog launch instr report stale
-  w=$(new_world config-reread-bootstrap)
-  head=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$head"
-  mkdir -p "$w/sm/config" "$w/sm/state"
-  printf 'old\n' > "$w/sm/config/crew-harness"
-  printf 'codex\n' > "$w/home/config/crew-harness"
-
-  fakebin=$(make_fake_toolchain "$w")
-  log="$w/bootstrap-reread.tmux.log"
-  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-    FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
-    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-  [ "$(cat "$w/sm/config/crew-harness")" = codex ] || fail "bootstrap did not push harness"
-  instr=$(reread_instruction_path "$w/sm") || fail "bootstrap reread instruction missing"
-  assert_present "$instr" "bootstrap must write a config reread instruction when config changed"
-  assert_contains "$(cat "$log")" "[fm-from-firstmate]" \
-    "bootstrap config reread must use routed secondmate send"
-  assert_contains "$(cat "$instr")" \
-    $'-----BEGIN config/crew-harness-----\ncodex\n-----END config/crew-harness-----' \
-    "bootstrap instruction must carry exact post-write harness bytes"
-
+test_spawn_flexibility_remains_defaults_only() {
+  local w sm launchlog launch report stale
   # fm-spawn still permits a conscious explicit runtime outside the config
   # (defaults/rules only - never harden spawn against deliberate choice).
   w=$(new_world config-reread-spawn-flex)
@@ -2383,61 +2170,7 @@ test_config_reread_bootstrap_path_and_spawn_flexibility() {
   launch=$(cat "$launchlog")
   assert_contains "$launch" "pi" \
     "explicit --harness pi must still win over configured codex defaults"
-  pass "B18 bootstrap config reread path works; spawn flexibility remains defaults-only"
-}
-
-test_bootstrap_respawns_before_config_reread() {
-  local w head fakebin log report stale
-  w=$(new_world config-reread-respawn-order)
-  head=$(git -C "$w/main" rev-parse HEAD)
-  add_sm_worktree "$w" sm "$head"
-  mkdir -p "$w/sm/config" "$w/sm/state"
-  printf 'harness=codex\n' >> "$w/home/state/sm.meta"
-  printf '%s' old > "$w/sm/config/crew-harness"
-  printf '%s' codex > "$w/home/config/crew-harness"
-  report="$w/sm/state/stale-reread.report"
-  printf '%s\n' $'crew-harness\tpushed\t' > "$report"
-  stale="$w/sm/state/.fm-inherited-config-reread.stale-generation"
-  fm_config_write_reread_instruction "$w/sm" "$report" "$stale" \
-    || fail "could not create stale reread generation"
-  fm_config_reread_mark_pending "$stale" "$stale.pending" \
-    || fail "could not create stale reread marker"
-  log="$w/config-reread-respawn-order.log"
-
-cat > "$w/main/bin/fm-spawn.sh" <<SH
-#!/usr/bin/env bash
-. '$w/main/bin/fm-config-inherit-lib.sh'
-printf '%s' spawn >> '$log'
-printf '%s' codex > '$w/sm/config/crew-harness'
-printf '%s\n' 7500 > '$w/sm/config/startup-memory-budget'
-SH
-  chmod +x "$w/main/bin/fm-spawn.sh"
-  fakebin=$(make_fake_toolchain "$w")
-  cat > "$fakebin/tmux" <<SH
-#!/usr/bin/env bash
-case "\$*" in
-  *display-message*'#{pane_current_command}'*) printf '%s' zsh ;;
-  *display-message*'#{pane_id}'*) printf '%s' '%1' ;;
-  *display-message*'#{cursor_y}'*) printf '%s' 0 ;;
-  *capture-pane*) printf '❯\n'
-    ;;
-  *send-keys*) printf '%s' send-keys >> '$log' ;;
-esac
-SH
-  chmod +x "$fakebin/tmux"
-  PATH="$fakebin:$BASE_PATH" FM_HOME="$w/home" FM_ROOT_OVERRIDE="$w/main" \
-    FM_SEND_SETTLE=0 FM_FAKE_TMUX_LOG="$log" \
-    "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
-  assert_contains "$(cat "$log")" "spawn" \
-    "bootstrap did not respawn the dead secondmate"
-  assert_not_contains "$(cat "$log")" "send-keys" \
-    "bootstrap nudged a secondmate before its respawn completed"
-  assert_present "$stale" "bootstrap removed the stale generation before relaunch handling"
-  assert_present "$stale.pending" "bootstrap removed the stale marker before relaunch handling"
-  fm_config_reread_discard_pending "$w/sm" || fail "could not clean respawn test generation"
-  assert_no_reread_pending "$w/sm"
-  assert_no_reread_instructions "$w/sm"
-  pass "B19 bootstrap respawns before inherited-config reread"
+  pass "B18 spawn flexibility remains defaults-only"
 }
 
 test_spawn_quarantines_pending_rereads_on_cleanup_failure() {
@@ -2534,14 +2267,8 @@ test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens
 test_spawn_explicit_harness_uses_explicit_profile_axes
 test_spawned_secondmate_uses_its_harness_supervision_model
 test_spawn_fallback_chain_and_crew_scout_unaffected
-test_bootstrap_sweep_propagates_and_reconverges
-test_bootstrap_sweep_propagates_when_tracked_current
-test_bootstrap_sweep_defers_dispatch_on_stale_unignored_home
-test_bootstrap_sweep_materializes_and_inherits_memory_default
 test_backend_inheritance_present_and_absent
 test_presentation_inheritance_default_on_and_opt_out
-test_bootstrap_sweep_surfaces_config_propagation_failure
-test_bootstrap_rereads_after_partial_propagation
 test_config_push_propagates_reports_without_ff_or_nudge
 test_config_push_reports_skips_dirty_and_invalid_home
 test_config_push_exits_nonzero_on_copy_error
@@ -2556,8 +2283,7 @@ test_config_reread_full_retry_queue_drains_before_new_push
 test_config_reread_cleanup_runs_after_mixed_delivery_failure
 test_config_reread_stops_after_failed_generation
 test_config_reread_skips_when_unchanged_and_reads_after_push
-test_config_reread_bootstrap_path_and_spawn_flexibility
-test_bootstrap_respawns_before_config_reread
+test_spawn_flexibility_remains_defaults_only
 test_spawn_quarantines_pending_rereads_on_cleanup_failure
 test_bootstrap_detect_only_does_not_create_state
 
