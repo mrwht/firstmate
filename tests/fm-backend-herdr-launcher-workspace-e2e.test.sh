@@ -168,14 +168,6 @@ printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM_HOME/AGENTS.md
 printf '%s\n' "$SM_ID" > "$SM_HOME/.fm-secondmate-home"
 printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM_HOME/data/charter.md"
 
-SM2_ID="lwsm2"
-SM2_HOME="$TMP_ROOT/secondmate-home-2"
-mkdir -p "$SM2_HOME/state" "$SM2_HOME/config" "$SM2_HOME/projects" "$SM2_HOME/bin" "$SM2_HOME/data"
-printf 'off\n' > "$SM2_HOME/config/herdr-presentation-spaces"
-printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM2_HOME/AGENTS.md"
-printf '%s\n' "$SM2_ID" > "$SM2_HOME/.fm-secondmate-home"
-printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM2_HOME/data/charter.md"
-
 # A third primary-shaped home that keeps presentation spaces ON through the
 # historical empty opt-in file, so the default-on migration is exercised against
 # real Herdr while the opted-out homes above assert the flat layout in isolation.
@@ -189,8 +181,6 @@ for id in uniqA uniqB dupC dupD staleF smE presU presD; do
   printf 'trivial launcher-placement brief: nothing to do.\n' > "$SM_HOME/data/$id/brief.md"
   printf 'trivial launcher-placement brief: nothing to do.\n' > "$PRES_HOME/data/$id/brief.md"
 done
-mkdir -p "$PRIMARY_HOME/data/$SM2_ID"
-printf 'trivial secondmate charter brief: nothing to do.\n' > "$PRIMARY_HOME/data/$SM2_ID/brief.md"
 
 PROJ="$TMP_ROOT/scratch-project"; make_scratch_project "$PROJ"
 
@@ -399,20 +389,7 @@ SME_WS=$(workspace_of_pane "$SME_PANE")
   || fail "the duplicate secondmate-labeled workspace was mutated"
 pass "real herdr E2E: a secondmate launching its own worker gets the same exact-workspace guarantee, and its same-labeled sibling is untouched"
 
-# --- 7. a --secondmate launch is NOT collapsed into the launcher's workspace -
-
-spawn_from_launcher "$LAUNCH_DUP_PANE" "$PRIMARY_HOME" "$SM2_ID" "$SM2_HOME" --secondmate
-[ "$SPAWN_RC" -eq 0 ] || fail "the primary's --secondmate launch failed"$'\n'"$(cat "$SPAWN_ERR")"
-SM2_META="$PRIMARY_HOME/state/$SM2_ID.meta"
-SM2_PANE=$(grep '^herdr_pane_id=' "$SM2_META" | cut -d= -f2-)
-SM2_WS=$(workspace_of_pane "$SM2_PANE")
-[ "$SM2_WS" != "$WS_PRIMARY_DUP" ] \
-  || fail "a --secondmate launch must stand up the secondmate's own workspace, not join the launcher's"
-[ "$(label_of_workspace "$SM2_WS")" = "2ndmate-$SM2_ID" ] \
-  || fail "a --secondmate launch should land in '2ndmate-$SM2_ID', got '$(label_of_workspace "$SM2_WS")'"
-pass "real herdr E2E: a --secondmate launch still stands up that secondmate's own workspace instead of inheriting the launcher's"
-
-# --- 8. teardown closes only the worker's own pane --------------------------
+# --- 7. teardown closes only the worker's own pane --------------------------
 
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
   FM_CONFIG_OVERRIDE="$PRIMARY_HOME/config" \

@@ -128,22 +128,10 @@ fm_pf_slug_valid() {
   [ "${#v}" -le 128 ]
 }
 
-# fm_pf_home_id_valid <home_id>: tasks-axi accepts "main" or
-# "secondmate:<stable-id>" as a work_ref home. Validate the same shape here so a
-# malformed source home is refused before it reaches a filename or a CLI call.
-# NOTE: bin/fm-teardown.sh's own marked-secondmate cleanup guard still
-# constructs and validates the secondmate:<id> shape through this function; the
-# public-followup register/emit boundary (fm-public-followup.sh,
-# fm-public-followup-emit.sh) enforces main-only itself rather than narrowing
-# this shared shape check, so this stays permissive until fm-teardown.sh's own
-# secondmate-parent-binding guard is separately retired.
+# fm_pf_home_id_valid <home_id>: "main" is the only valid work_ref home, so any
+# other value is refused before it reaches a filename or a CLI call.
 fm_pf_home_id_valid() {
-  local v=$1
-  case "$v" in
-    main) return 0 ;;
-    secondmate:*) fm_pf_slug_valid "${v#secondmate:}" ;;
-    *) return 1 ;;
-  esac
+  [ "$1" = main ]
 }
 
 fm_pf_sha256() {

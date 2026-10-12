@@ -205,9 +205,7 @@ cmd_register() {
   fm_pf_slug_valid "$id"       || die "unsafe obligation id: $id"
   fm_pf_slug_valid "$relation" || die "unsafe relation id: $relation"
   fm_pf_slug_valid "$work_id"  || die "unsafe work id: $work_id"
-  # This registration boundary only ever produces "main": fm_pf_home_id_valid
-  # also accepts "secondmate:<id>" for bin/fm-teardown.sh's own marked-secondmate
-  # cleanup guard (see fm-public-followup-lib.sh), which is out of scope here.
+  # This registration boundary only ever produces "main".
   [ "$work_home" = main ] \
     || die "work home must be 'main', got '$work_home'"
   case "$generation" in

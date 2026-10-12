@@ -134,9 +134,7 @@ fm_pf_slug_valid "$OBLIGATION" || die "unsafe obligation id: $OBLIGATION"
 fm_pf_slug_valid "$RELATION"   || die "unsafe relation id: $RELATION"
 fm_pf_slug_valid "$WORK_ID"    || die "unsafe work id: $WORK_ID"
 fm_pf_slug_valid "$OUTCOME"    || die "unsafe outcome type: $OUTCOME"
-# This reporting boundary only ever produces "main": fm_pf_home_id_valid also
-# accepts "secondmate:<id>" for bin/fm-teardown.sh's own marked-secondmate
-# cleanup guard (see fm-public-followup-lib.sh), which is out of scope here.
+# This reporting boundary only ever produces "main".
 [ "$SOURCE_HOME" = main ] \
   || die "source home must be 'main', got '$SOURCE_HOME'"
 case "$GENERATION" in
