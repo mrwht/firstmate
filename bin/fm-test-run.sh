@@ -1005,7 +1005,11 @@ families_for_changed_path() {
       fi
       ;;
     tests/*)
-      printf '%s\n' "__unmapped__:$path"
+      # A deleted test support file has no consuming suite left to select, the
+      # same rule the bin/* case above applies.
+      if [ -e "$path" ]; then
+        printf '%s\n' "__unmapped__:$path"
+      fi
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;
