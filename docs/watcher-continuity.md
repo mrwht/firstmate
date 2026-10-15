@@ -11,8 +11,12 @@ A failed follow-up never cancels continuity restoration.
 Pi same-process session replacement follows the generation-owner contract in `.pi/extensions/fm-primary-pi-watch.ts`.
 Claude's `.claude/settings.json` Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns routine tokenless re-arm.
 The hook fires on every Stop, and an eligible primary with supervision need admits one home-scoped owner that foregrounds `bin/fm-watch-arm.sh` inside the hook-owned process tree.
-It arms only for a Claude hook payload whose event it serves (Stop), so a hand-run prints usage and exits without arming; `bin/fm-arm-pretool-check.sh` also denies running it directly ([`arm-pretool-check.md`](arm-pretool-check.md)).
+It arms only for a Claude hook payload whose event it serves (Stop or SessionStart), so a hand-run prints usage and exits without arming; `bin/fm-arm-pretool-check.sh` also denies running it directly ([`arm-pretool-check.md`](arm-pretool-check.md)).
 Claude ends the hook's process group with one TERM when the hook timeout expires or the session ends, and both the hook and the watcher finish their exit cleanup under that TERM: the watcher masks further signals before cleanup, so the arm's follow-up signal cannot abort its lock release and downtime publication.
+The same script is also registered as a `SessionStart` `asyncRewake` hook, so a freshly opened session is supervised before its first turn ends.
+That session-open firing arms only on interactive-session evidence (`CLAUDE_CODE_ENTRYPOINT=cli` or `CLAUDE_CODE_SESSION_ATTENDED=1`), because Claude runs `asyncRewake` hooks synchronously in print mode, where an armed cycle would hold startup open.
+It then waits a bounded time for `state/.session-start-complete` to name the session lock this session holds, so a read-only session, a truncated startup, or a resumed session that only received the nudge leaves arming to the first Stop.
+It never reclaims a stale session lock, and the AFK, supervision-need, and single-flight gates below apply to it unchanged.
 A numeric session-lock owner that fails the shared `fm_harness_pid_alive` predicate is reclaimed through `bin/fm-lock.sh` before auto-arm state changes, while a live owner, absent lock, or malformed lock keeps the competing hook inert.
 The stale-owner claim occurs only after the existing AFK and supervision-need gates pass.
 After each non-actionable arm close, the hook rechecks the identity-matched watcher lock and fresh beacon before retrying a bounded number of times.
@@ -20,6 +24,16 @@ A cycle-end failure is benign when that live-watcher predicate is true, and the 
 Only an exhausted failure with no verified watcher emits one last-resort notice for the continuous failure episode; later consecutive Stop cycles exit 2 to guarantee another Stop-owned retry without repeating the notice until the turn-end guard consumes the attended fail-open.
 The Claude turn-end guard owns the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
+
+## Hook budget and lease renewal
+
+Both auto-arm registrations carry `timeout: 604800` (seven days) and repeat it as `--hook-timeout`, below the roughly 24.8-day ceiling of the JavaScript timer Claude arms with that value.
+When the budget expires, Claude ends the hook's process group with one SIGTERM, counting wall time across system sleep, and nothing re-arms until a turn ends.
+The hook therefore exports `FM_WATCH_LEASE_DEADLINE`, one seventh of the budget (one day) before Claude's deadline, and the arm layer closes the cycle there with `check: lease-renewal`.
+A watcher the arm forked closes itself with that typed wake, while an arm attached to a watcher it did not fork ends only its own follow and leaves that watcher running.
+The hook translates a lease-only close into its own exit-2 banner that names no fleet event.
+The handling turn drains, acknowledges with the printed `WAKE_ACK_REQUIRED` command, sends nothing to the captain, and ends; its Stop re-arms with a fresh budget, so an idle session costs one cheap turn per six days.
+The one-day margin also absorbs Claude's timer firing late on wake from a long system sleep.
 
 ## Actionable wake ordering
 
@@ -85,8 +99,11 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination, the `state/.watch-arm-track.lock` dedup guard that makes a redundant concurrent plain-mode arm call exit promptly instead of leaking a second indefinite follower, a group TERM followed by a watcher re-signal that must still release the lock and publish downtime, and reclaiming a lock whose recorded watcher identity no longer matches the live process at its reused PID without signaling that process.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
-`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's Stop-payload refusal, scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, exit-2 translation, and group-TERM cleanup of its arm output.
-`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
+`tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's hook-payload refusal, scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, exit-2 translation, and group-TERM cleanup of its arm output.
+It also pins both tracked registrations' sub-ceiling `--hook-timeout`, the session-open interactive-evidence gate with each signal driven apart, the wait for a concurrent session start, the read-only and stale-lock refusals, the lease deadline derivation, and the silent lease-renewal banner.
+`tests/fm-watch-arm.test.sh` drives a real leased watcher to `check: lease-renewal`, proves its acknowledgement prevents a later resurface, and proves an attached leased arm leaves the watcher it did not fork running.
+`FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, keeps the print-mode session-open arm inert, and checks the competing-live-owner negative control.
+Its interactive phase never types a prompt and requires the session-open arm to carry the lease and wake the untouched session.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
 
 ## Active limits and verification
@@ -94,6 +111,6 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
-Claude depends on the Stop `asyncRewake` rewake, Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
+Claude depends on the `asyncRewake` rewake, and arms at session open only in interactive sessions; Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
 
-[`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the 2026-07-24 Stop-owned Claude auto-arm results, and exact opt-in commands.
+[`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the Claude auto-arm results including the hook budget and session-open evidence, and exact opt-in commands.

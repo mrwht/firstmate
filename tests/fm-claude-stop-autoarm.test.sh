@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for the Claude Stop-owned watcher auto-arm
-# (bin/fm-claude-stop-autoarm.sh, docs/watcher-continuity.md).
+# (bin/fm-claude-stop-autoarm.sh, docs/watcher-continuity.md), including its
+# SessionStart session-open mode and its hook-budget lease.
 #
 # The hook fires as a Claude asyncRewake Stop hook. These tests run it hermetically
 # as a child of a fake harness (a bash symlink named "claude") whose pid is
@@ -181,6 +182,270 @@ record_watcher_lock() {
 }
 
 # --- registration contract ----------------------------------------------------
+
+# The hook learns its own budget only from --hook-timeout, so every tracked
+# auto-arm registration must repeat its registered timeout exactly, stay an
+# asyncRewake hook, and keep that budget below the ~24.8-day JS timer ceiling.
+test_tracked_registrations_repeat_their_timeout() {
+  local settings rows event cmd timeout async flag count=0 stop=0 sessionstart=0
+  command -v jq >/dev/null 2>&1 || fail "test host must provide jq"
+  settings="$ROOT/.claude/settings.json"
+  rows=$(jq -r '.hooks | to_entries[] | .key as $event | .value[].hooks[]
+    | select(.command | contains("bin/fm-claude-stop-autoarm.sh"))
+    | [$event, .command, (.timeout // ""), (.asyncRewake // false)] | @tsv' "$settings")
+  while IFS=$'\t' read -r event cmd timeout async; do
+    [ -n "$event" ] || continue
+    count=$((count + 1))
+    case "$event" in
+      Stop) stop=$((stop + 1)) ;;
+      SessionStart) sessionstart=$((sessionstart + 1)) ;;
+      *) fail "auto-arm registered on an unexpected event: $event" ;;
+    esac
+    [ "$async" = true ] || fail "$event auto-arm registration must be asyncRewake"
+    flag=$(printf '%s\n' "$cmd" | sed -n 's/.*--hook-timeout[ =]\([0-9][0-9]*\).*/\1/p')
+    [ -n "$flag" ] || fail "$event auto-arm registration does not pass --hook-timeout: $cmd"
+    [ "$flag" = "$timeout" ] || fail "$event auto-arm --hook-timeout $flag differs from its registered timeout $timeout"
+    [ "$timeout" -gt 28800 ] || fail "$event auto-arm timeout $timeout must exceed the old 8-hour budget"
+    [ "$((timeout * 1000))" -lt 2147483647 ] || fail "$event auto-arm timeout $timeout overflows the JS timer ceiling"
+  done <<< "$rows"
+  [ "$stop" -eq 1 ] && [ "$sessionstart" -eq 1 ] \
+    || fail "expected one Stop and one SessionStart auto-arm registration, saw stop=$stop sessionstart=$sessionstart ($count total)"
+  pass "auto-arm: Stop and SessionStart registrations repeat their sub-ceiling timeout as --hook-timeout"
+}
+
+# --- session open --------------------------------------------------------------
+
+# Run the hook as a SessionStart firing inside a fake harness that holds the
+# lock. $1 = fixture dir, $2 = completion mode: completed (session start already
+# completed for this harness), late (completes 2s after the hook starts), or
+# none (never completes). Interactive-session evidence comes from the caller's
+# environment: CLAUDE_CODE_ENTRYPOINT and CLAUDE_CODE_SESSION_ATTENDED.
+run_sessionstart_autoarm() {
+  local dir=$1 completion=$2 rc=0
+  printf '%s\n' '{"session_id":"sess-open","hook_event_name":"SessionStart","source":"startup"}' \
+    | FM_HOME="$dir" COMPLETION="$completion" "$FAKE_CLAUDE" -c '
+        case "$COMPLETION" in
+          completed)
+            printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+            printf "%s\n" "$$" > "$FM_HOME/state/.session-start-complete"
+            ;;
+          late)
+            # The digest hook is still reclaiming a dead prior owner.
+            printf "9999999\n" > "$FM_HOME/state/.lock"
+            ( sleep 2
+              printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+              printf "%s\n" "$$" > "$FM_HOME/state/.session-start-complete" ) &
+            ;;
+          *) printf "%s\n" "$$" > "$FM_HOME/state/.lock" ;;
+        esac
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800
+        rc=$?
+        wait
+        exit "$rc"
+      ' 2>&1 || rc=$?
+  return "$rc"
+}
+
+test_sessionstart_arms_interactive_session_after_its_start() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/ss-arm")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  out=$(CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 run_sessionstart_autoarm "$dir" completed); status=$?
+  expect_code 2 "$status" "an untouched interactive session with in-flight work must be armed and rewoken from SessionStart"
+  assert_contains "$out" "stale: fixture-win actionable" "session-open rewake must carry the arm's reason"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "session-open arm must record outcome=rewake"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "session-open arm left the owner lock behind"
+  pass "auto-arm: SessionStart arms an untouched interactive session once its own session start completed"
+}
+
+test_sessionstart_waits_for_concurrent_session_start() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/ss-late")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  # Record what the arm saw, so arming before the digest finished is visible.
+  {
+    sed -n '1p' "$dir/bin/fm-watch-arm.sh"
+    printf '%s\n' 'cat "$FM_HOME/state/.session-start-complete" > "$FM_HOME/state/arm-saw-completion" 2>/dev/null'
+    sed '1d' "$dir/bin/fm-watch-arm.sh"
+  } > "$dir/bin/fm-watch-arm.sh.new"
+  mv "$dir/bin/fm-watch-arm.sh.new" "$dir/bin/fm-watch-arm.sh"
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+  out=$(CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 run_sessionstart_autoarm "$dir" late); status=$?
+  expect_code 2 "$status" "the session-open arm must wait for the concurrent digest hook to complete"
+  [ "$(wc -l < "$dir/state/arm-ran" | tr -d ' ')" -eq 1 ] || fail "session-open arm must run exactly once after the digest completes"
+  [ -s "$dir/state/arm-saw-completion" ] || fail "session-open arm ran before the concurrent session start completed"
+  [ "$(cat "$dir/state/arm-saw-completion")" = "$(cat "$dir/state/.lock")" ] \
+    || fail "session-open arm must follow the completion recorded for its own session lock"
+  pass "auto-arm: SessionStart waits for the concurrently running session start before arming"
+}
+
+test_sessionstart_needs_interactive_evidence() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/ss-print")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  out=$(CLAUDE_CODE_ENTRYPOINT=sdk-cli CLAUDE_CODE_SESSION_ATTENDED=0 run_sessionstart_autoarm "$dir" completed); status=$?
+  expect_code 0 "$status" "a print-mode session runs hooks synchronously and must not arm at session open"
+  [ -z "$out" ] || fail "print-mode session open produced output: $out"
+  [ ! -e "$dir/state/arm-ran" ] || fail "print-mode session open armed a synchronous hook"
+  out=$(unset CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ATTENDED; run_sessionstart_autoarm "$dir" completed); status=$?
+  expect_code 0 "$status" "a session with no interactive evidence at all must not arm at session open"
+  [ ! -e "$dir/state/arm-ran" ] || fail "session open armed without any interactive evidence"
+  pass "auto-arm: SessionStart stays inert without interactive-session evidence"
+}
+
+# Either vendor signal alone carries the positive verdict. Drive them apart and
+# confirm each divergent pair really diverges, so neither case is vacuous.
+test_sessionstart_either_interactive_signal_suffices() {
+  local dir entry attended status
+  for pair in cli:0 sdk-cli:1; do
+    entry=${pair%%:*}
+    attended=${pair#*:}
+    { [ "$entry" = cli ] && [ "$attended" = 1 ]; } && fail "test pair $pair does not diverge"
+    { [ "$entry" != cli ] && [ "$attended" != 1 ]; } && fail "test pair $pair carries no positive signal"
+    dir=$(make_primary_dir "$TMP_ROOT/ss-signal-$entry")
+    : > "$dir/state/task.meta"
+    write_arm_fixture "$dir" actionable
+    CLAUDE_CODE_ENTRYPOINT=$entry CLAUDE_CODE_SESSION_ATTENDED=$attended run_sessionstart_autoarm "$dir" completed >/dev/null; status=$?
+    expect_code 2 "$status" "SessionStart with entrypoint=$entry attended=$attended must still arm"
+  done
+  pass "auto-arm: SessionStart arms when either interactive-session signal alone is present"
+}
+
+test_sessionstart_inert_in_read_only_session() {
+  local dir other out status started elapsed
+  dir=$(make_primary_dir "$TMP_ROOT/ss-readonly")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  "$FAKE_CLAUDE" -c 'sleep 60; :' &
+  other=$!
+  printf '%s\n' "$other" > "$dir/state/.lock"
+  printf '%s\n' "$other" > "$dir/state/.session-start-complete"
+  started=$(date +%s)
+  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
+    | CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 FM_HOME="$dir" \
+      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800' 2>&1); status=$?
+  elapsed=$(( $(date +%s) - started ))
+  kill "$other" 2>/dev/null || true
+  wait "$other" 2>/dev/null || true
+  expect_code 0 "$status" "a lock-refused read-only session must not arm at session open"
+  [ "$elapsed" -lt 10 ] || fail "a live competing owner must end the session-open wait at once, took ${elapsed}s"
+  [ ! -e "$dir/state/arm-ran" ] || fail "read-only session open armed"
+  [ "$(cat "$dir/state/.lock")" = "$other" ] || fail "read-only session open replaced the live owner"
+  pass "auto-arm: SessionStart stays inert at once in a lock-refused read-only session"
+}
+
+test_sessionstart_bounded_wait_without_completion() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/ss-truncated")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  out=$(CLAUDE_CODE_ENTRYPOINT=cli FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT=2 run_sessionstart_autoarm "$dir" none); status=$?
+  expect_code 0 "$status" "a session start that never completes must leave arming to the first Stop"
+  [ ! -e "$dir/state/arm-ran" ] || fail "session open armed without a completed session start"
+
+  dir=$(make_primary_dir "$TMP_ROOT/ss-stale")
+  : > "$dir/state/task.meta"
+  printf '9999999\n' > "$dir/state/.lock"
+  write_arm_fixture "$dir" actionable
+  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"resume"}' \
+    | CLAUDE_CODE_ENTRYPOINT=cli FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT=2 FM_HOME="$dir" \
+      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800' 2>&1); status=$?
+  expect_code 0 "$status" "session open must not reclaim a stale lock itself"
+  [ "$(cat "$dir/state/.lock")" = 9999999 ] || fail "session open reclaimed a stale lock that session start owns"
+  [ ! -e "$dir/state/arm-ran" ] || fail "session open armed over a stale lock"
+  pass "auto-arm: SessionStart gives up after a bounded wait and never reclaims a stale lock"
+}
+
+test_sessionstart_respects_afk_and_single_flight() {
+  local dir out status holder
+  dir=$(make_primary_dir "$TMP_ROOT/ss-afk")
+  : > "$dir/state/task.meta"
+  : > "$dir/state/.afk"
+  write_arm_fixture "$dir" actionable
+  out=$(CLAUDE_CODE_ENTRYPOINT=cli run_sessionstart_autoarm "$dir" completed); status=$?
+  expect_code 0 "$status" "away mode owns supervision at session open"
+  [ ! -e "$dir/state/arm-ran" ] || fail "session open armed while state/.afk existed"
+
+  dir=$(make_primary_dir "$TMP_ROOT/ss-single-flight")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  sleep 60 &
+  holder=$!
+  mkdir -p "$dir/state/.claude-autoarm.lock"
+  printf '%s\n' "$holder" > "$dir/state/.claude-autoarm.lock/pid"
+  out=$(CLAUDE_CODE_ENTRYPOINT=cli run_sessionstart_autoarm "$dir" completed); status=$?
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  expect_code 0 "$status" "a live auto-arm owner must keep the session-open firing from starting a second cycle"
+  [ ! -e "$dir/state/arm-ran" ] || fail "session open started a second cycle beside a live owner"
+  pass "auto-arm: SessionStart honors away mode and the single-flight owner lock"
+}
+
+# --- lease renewal ---------------------------------------------------------------
+
+write_lease_arm_fixture() {
+  local dir=$1 reasons=$2
+  cat > "$dir/bin/fm-watch-arm.sh" <<SH
+#!/usr/bin/env bash
+echo "\$\$" >> "\$FM_HOME/state/arm-ran"
+printf '%s\n' "\${FM_WATCH_LEASE_DEADLINE:-unset}" > "\$FM_HOME/state/lease-deadline"
+printf 'watcher: started pid=%s (beacon fresh)\n' "\$\$"
+printf '$reasons'
+exit 0
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+}
+
+test_lease_deadline_derives_from_hook_timeout() {
+  local dir before after deadline status
+  dir=$(make_primary_dir "$TMP_ROOT/lease-deadline")
+  : > "$dir/state/task.meta"
+  write_lease_arm_fixture "$dir" 'stale: fixture\n'
+  before=$(date +%s)
+  printf '%s\n' '{"hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+    printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+    "$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 700' >/dev/null 2>&1; status=$?
+  after=$(date +%s)
+  expect_code 2 "$status" "the leased cycle must still translate its actionable close"
+  deadline=$(cat "$dir/state/lease-deadline")
+  [ "$deadline" -ge $((before + 600)) ] && [ "$deadline" -le $((after + 600)) ] \
+    || fail "lease deadline $deadline must sit one seventh of a 700s budget early (start+600), window $before-$after"
+
+  rm -f "$dir/state/lease-deadline"
+  printf '%s\n' '{"hook_event_name":"Stop"}' | FM_WATCH_LEASE_DEADLINE=1 FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+    printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+    "$FM_HOME/bin/fm-claude-stop-autoarm.sh"' >/dev/null 2>&1
+  [ "$(cat "$dir/state/lease-deadline")" = unset ] || fail "without --hook-timeout no lease (not even an inherited one) may reach the arm"
+  pass "auto-arm: the lease deadline is one seventh of --hook-timeout before Claude's deadline, and absent without it"
+}
+
+test_lease_renewal_rewakes_with_silent_banner() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/lease-banner")
+  : > "$dir/state/task.meta"
+  write_lease_arm_fixture "$dir" 'check: lease-renewal\n'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "a lease-renewal close must rewake so one turn re-arms with a fresh budget"
+  assert_contains "$out" "supervision lease renewal - no fleet event" "lease rewake must say it carries no fleet event"
+  assert_contains "$out" "check: lease-renewal" "lease rewake must carry its typed reason"
+  assert_contains "$out" "Send no captain-facing message" "lease rewake must ask for a silent handling turn"
+  assert_contains "$out" "WAKE_ACK_REQUIRED" "lease rewake must still retire the closed cycle's episode"
+  assert_not_contains "$out" "firstmate watcher wake" "a lease-only close must not look like a fleet event"
+  [ "$(epoch_outcome "$dir")" = rewake ] || fail "lease rewake must record outcome=rewake for the turn-end guard"
+
+  dir=$(make_primary_dir "$TMP_ROOT/lease-mixed")
+  : > "$dir/state/task.meta"
+  write_lease_arm_fixture "$dir" 'signal: task.status done: fixture\ncheck: lease-renewal\n'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" "a close with a real event must rewake"
+  assert_contains "$out" "firstmate watcher wake" "a real event beside the lease must use the ordinary wake banner"
+  assert_not_contains "$out" "lease renewal - no fleet event" "a real event must never be described as lease-only"
+  pass "auto-arm: a lease-only close rewakes with the silent renewal banner, a real event keeps the ordinary banner"
+}
+
 
 # --- scope and gates ----------------------------------------------------------
 
@@ -695,6 +960,16 @@ test_fm_lock_status_still_works_with_shared_lib() {
   pass "fm-lock: shared session-lock lib preserves the status path"
 }
 
+test_tracked_registrations_repeat_their_timeout
+test_sessionstart_arms_interactive_session_after_its_start
+test_sessionstart_waits_for_concurrent_session_start
+test_sessionstart_needs_interactive_evidence
+test_sessionstart_either_interactive_signal_suffices
+test_sessionstart_inert_in_read_only_session
+test_sessionstart_bounded_wait_without_completion
+test_sessionstart_respects_afk_and_single_flight
+test_lease_deadline_derives_from_hook_timeout
+test_lease_renewal_rewakes_with_silent_banner
 test_inert_in_child_worktree
 test_inert_without_session_lock
 test_reclaims_stale_session_lock_before_arming

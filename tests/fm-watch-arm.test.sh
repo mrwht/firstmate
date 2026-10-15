@@ -797,7 +797,71 @@ test_downtime_marker_does_not_follow_symlink() {
   pass "watch-arm: downtime marker publication does not follow symlinks"
 }
 
+# A hook-owned arm exports FM_WATCH_LEASE_DEADLINE so its cycle closes while the
+# harness can still deliver a rewake. A forked watcher must close itself with
+# the typed renewal wake, and the handling turn's ordinary acknowledgement must
+# retire the episode so the next arm does not resurface a renewal as downtime.
+test_owned_cycle_closes_with_lease_renewal() {
+  local dir home state fakebin armout status deadline
+  dir=$(make_case lease-owned)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home"
+  deadline=$(( $(date +%s) + 3 ))
+  FM_WATCH_LEASE_DEADLINE=$deadline start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  grep -q '^watcher: started ' "$armout" || fail "leased arm did not start its watcher: $(cat "$armout")"
+  wait_for_exit "$ARM_PID" 200
+  status=$?
+  expect_code 0 "$status" "a leased cycle must close cleanly with its renewal reason"
+  [ "$(date +%s)" -ge "$deadline" ] || fail "the leased cycle closed before its deadline"
+  grep -qx 'check: lease-renewal' "$armout" || fail "leased cycle did not report the renewal wake: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "leased cycle reported a failure: $(cat "$armout")"
+  [ ! -d "$state/.watch.lock" ] || fail "leased watcher left its singleton lock behind"
+  grep -q 'reason=actionable-check' "$state/.watch-cycle-exits.log" \
+    || fail "the renewal close was not recorded as an actionable check"
+
+  ack_wakes "$state" || fail "the renewal episode could not be acknowledged"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  grep -q '^watcher: started ' "$armout" || fail "post-renewal arm did not start: $(cat "$armout")"
+  sleep 3
+  ! grep -q 'rearm-resurface' "$armout" \
+    || fail "an acknowledged renewal resurfaced as downtime: $(cat "$armout")"
+  kill "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: a leased owned cycle closes with check: lease-renewal and its acknowledgement prevents a resurface"
+}
+
+# An arm that attached to a watcher it did not fork cannot hand that watcher
+# its lease, so the arm itself ends its follow at the deadline and must leave
+# the healthy watcher running for the next arm to attach to.
+test_attached_arm_closes_at_lease_deadline() {
+  local dir state fakebin out armout status
+  dir=$(make_case lease-attached)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+  start_seed_watcher "$state" "$fakebin" "$out"
+  FM_WATCH_LEASE_DEADLINE=$(( $(date +%s) + 2 )) start_attached_arm "$state" "$fakebin" "$armout" 1
+  wait_for_exit "$ARM_PID" 200
+  status=$?
+  expect_code 0 "$status" "an attached leased arm must close cleanly at its deadline"
+  grep -qx 'check: lease-renewal' "$armout" || fail "attached arm did not report the renewal: $(cat "$armout")"
+  is_live_non_zombie "$SEED_PID" || fail "the lease ended the attached watcher it did not own"
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
+    || fail "the attached watcher lost its singleton lock at the lease deadline"
+  grep -q 'reason=lease-renewal' "$state/.watch-cycle-exits.log" \
+    || fail "the attached lease close was not recorded in the lifecycle ledger"
+  kill "$SEED_PID" 2>/dev/null || true
+  wait "$SEED_PID" 2>/dev/null || true
+  pass "watch-arm: an attached arm ends its follow at the lease deadline and leaves the watcher running"
+}
+
 test_attached_arm_reports_the_delivered_wake
+test_owned_cycle_closes_with_lease_renewal
+test_attached_arm_closes_at_lease_deadline
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
 test_rearm_resurfaces_durable_queue_and_remote_open_decision

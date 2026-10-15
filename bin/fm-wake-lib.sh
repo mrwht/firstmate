@@ -78,6 +78,17 @@ fm_path_age() {
   echo $(( $(date +%s) - m ))
 }
 
+# True once the wall-clock lease deadline FM_WATCH_LEASE_DEADLINE (epoch
+# seconds) has passed. A hook-owned arm exports it so its watcher cycle closes
+# with "check: lease-renewal" before the harness ends the hook; unset or
+# malformed means no lease. Wall-clock seconds, unlike sleep(1), keep counting
+# across system sleep, as the harness's own hook timer does.
+fm_watch_lease_expired() {
+  local deadline=${FM_WATCH_LEASE_DEADLINE:-}
+  case "$deadline" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$(date +%s)" -ge "$deadline" ]
+}
+
 FM_WATCHER_MATCHED_IDENTITY=
 fm_watcher_lock_matches_pid() {
   local state=$1 watch_path=$2 pid=$3 home=${4:-$FM_HOME} lockdir lock_home lock_path lock_identity current_identity
