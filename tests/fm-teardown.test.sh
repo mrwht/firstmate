@@ -1853,6 +1853,35 @@ test_parked_own_run_is_aborted_before_teardown() {
   pass "a task's own parked no-mistakes run is aborted, not orphaned, before the worker is removed"
 }
 
+# A parked replacement run whose head advanced with gate fix commits that exist
+# only in the pipeline's own copy: the worktree cannot resolve that head, but
+# branch_sync reports the pipeline owning this branch for this run at the exact
+# local head, so the run is still this task's own and must not be orphaned.
+test_parked_own_run_with_pipeline_only_head_is_aborted() {
+  local case_dir rc head
+  case_dir=$(make_case parked-run-pipeline-head)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 a973c6af752f9fd5697fe6b16d577bc06b70565d 01NEWRUN)
+branch_sync:
+  state: pipeline_owned
+  local:
+    branch: fm/task-x1
+    head: $head
+  pipeline:
+    run: \"01NEWRUN\"" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "parked-run-pipeline-head: teardown should still succeed"
+  assert_grep "abort --run 01NEWRUN" "$case_dir/nm-abort.log" \
+    "parked-run-pipeline-head: the task's own parked run bound by branch_sync was not aborted"
+  pass "a task's own parked run with a pipeline-only head is aborted before the worker is removed"
+}
+
 test_mismatched_run_after_abort_refuses_unconfirmed() {
   local case_dir rc head
   case_dir=$(make_case parked-run-replaced)
@@ -2413,6 +2442,7 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
 test_parked_own_run_is_aborted_before_teardown
+test_parked_own_run_with_pipeline_only_head_is_aborted
 test_parked_own_run_refuses_when_abort_is_unconfirmed
 test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed
