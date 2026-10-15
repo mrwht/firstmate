@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Behavior tests for the muse (Muse Code) crewmate adapter: harness detection,
-# spawn launch shape and credential preflight, the secondmate refusal, the
+# spawn launch shape and credential preflight, the
 # session-log busy source, and teardown cleanup of the busy binding.
 #
 # The session-log fixtures below reproduce muse 0.1.0-R708.1's real record
@@ -359,29 +359,6 @@ EOF
   assert_grep "sessions_root=$resolved_caller/data/muse/sessions" "$binding" \
     "muse busy binding did not use the worker's resolved data root"
   pass "muse resolves relative XDG roots before preflight and launch"
-}
-
-# muse has no primary supervision protocol, and its Claude-compatible hook
-# dialect rejects the model-reawakening handlers a firstmate primary needs, so a
-# secondmate on muse could never arm a supervision cycle.
-test_spawn_refuses_secondmate() {
-  local case_dir home fakebin id out status
-  case_dir="$TMP_ROOT/secondmate"
-  home="$case_dir/home"
-  fakebin=$(make_spawn_fakebin "$case_dir/fake")
-  id="muse-secondmate-x1"
-  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config" "$case_dir/muse"
-  printf 'charter\n' > "$home/data/$id/brief.md"
-  out=$(cd "$case_dir" && FM_ROOT_OVERRIDE='' FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" META_API_KEY=test-key \
-    PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" muse --secondmate 2>&1)
-  status=$?
-  [ "$status" -ne 0 ] || fail "muse was accepted as a secondmate harness"
-  assert_contains "$out" "crewmate/scout adapter only" "muse secondmate refusal did not explain the boundary"
-  pass "muse is refused as a secondmate harness"
 }
 
 test_spawn_writes_busy_binding_and_teardown_removes_it() {
@@ -903,7 +880,6 @@ test_spawn_refuses_without_credential
 test_spawn_refuses_caller_only_environment_credential
 test_spawn_accepts_stored_credential
 test_spawn_resolves_relative_xdg_roots
-test_spawn_refuses_secondmate
 test_spawn_writes_busy_binding_and_teardown_removes_it
 test_muse_escape_aliases_clear_the_composer
 test_non_muse_escape_does_not_clear

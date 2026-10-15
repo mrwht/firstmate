@@ -407,12 +407,6 @@ finish_concurrent_expected_abort() {  # <id> <status> <stdout> <stderr>
   fi
 }
 
-spawn_secondmate_task() {
-  local id=$1 home=$2
-  FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$home" "sh -c 'sleep 120'" --secondmate --backend herdr
-}
-
 teardown_task() {  # <id> <home>
   local id=$1 home=$2
   FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
@@ -938,7 +932,7 @@ done
 pass "real Herdr lab: three repeated concurrent create/order/cleanup waves have zero active workspace or tab drift"
 
 # ------------------------------------------------------------------
-# Multi-home topology: real secondmate FM_HOME spawn paths, inheritance,
+# Multi-home topology: secondmate-marked FM_HOME spawn paths, inheritance,
 # concurrent cross-home waves, and session-scoped lock contention.
 # ------------------------------------------------------------------
 SECOND_HOME_A="$TMP_ROOT/home-2ndmate-alpha"
@@ -959,9 +953,6 @@ git -C "$SECOND_HOME_A" add .gitignore
 git -C "$SECOND_HOME_B" add .gitignore
 git -C "$SECOND_HOME_A" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
 git -C "$SECOND_HOME_B" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm init
-mkdir -p "$SECOND_HOME_A/bin"
-printf '# Firstmate secondmate fixture\n' > "$SECOND_HOME_A/AGENTS.md"
-printf 'Secondmate alpha charter.\n' > "$SECOND_HOME_A/data/charter.md"
 
 # Primary setting only; real inheritance must push it into both secondmate homes.
 [ -f "$HOME_DIR/config/herdr-presentation-spaces" ] \
@@ -970,26 +961,6 @@ printf 'Secondmate alpha charter.\n' > "$SECOND_HOME_A/data/charter.md"
   || fail "secondmate A unexpectedly had a local presentation setting before inheritance"
 [ ! -e "$SECOND_HOME_B/config/herdr-presentation-spaces" ] \
   || fail "secondmate B unexpectedly had a local presentation setting before inheritance"
-SECOND_SPAWN_LOG_START=$(log_line_count)
-spawn_secondmate_task alpha "$SECOND_HOME_A" > "$TMP_ROOT/alpha.out" 2> "$TMP_ROOT/alpha.err" \
-  || fail "secondmate alpha spawn failed: $(cat "$TMP_ROOT/alpha.err")"
-[ -f "$SECOND_HOME_A/config/herdr-presentation-spaces" ] \
-  || fail "secondmate spawn did not inherit the presentation setting"
-[ ! -e "$HOME_DIR/state/alpha.herdr-presentation" ] \
-  || fail "secondmate spawn published a presentation journal"
-SECOND_META="$HOME_DIR/state/alpha.meta"
-[ "$(grep '^kind=' "$SECOND_META" | cut -d= -f2-)" = secondmate ] \
-  || fail "secondmate spawn did not record kind=secondmate"
-SECOND_WSID=$(grep '^herdr_workspace_id=' "$SECOND_META" | cut -d= -f2-)
-SECOND_LABEL=$(lab workspace get "$SECOND_WSID" | jq -r '.result.workspace.label')
-[ "$SECOND_LABEL" = 2ndmate-alpha ] \
-  || fail "secondmate spawn did not use its flat parent workspace: $SECOND_LABEL"
-[ -z "$(projection_labels_from_log "$SECOND_SPAWN_LOG_START")" ] \
-  || fail "secondmate spawn created a corner projection workspace"
-if sed -n "$((SECOND_SPAWN_LOG_START + 1)),\$p" "$HERDR_CALL_LOG" \
-  | grep -E $'^(workspace\tmove|session\tlist)' >/dev/null 2>&1; then
-  fail "secondmate spawn attempted presentation ordering"
-fi
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-config-inherit-lib.sh"
 propagate_inheritable_config "$HOME_DIR/config" "$SECOND_HOME_A/config" \

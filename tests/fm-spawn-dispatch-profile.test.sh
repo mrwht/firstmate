@@ -105,14 +105,6 @@ enable_dispatch_profile() {
     > "$home/config/crew-dispatch.json"
 }
 
-make_seeded_secondmate_home() {
-  local home=$1 id=$2
-  mkdir -p "$home/bin" "$home/data"
-  printf '# Firstmate\n' > "$home/AGENTS.md"
-  printf '%s\n' "$id" > "$home/.fm-secondmate-home"
-  printf 'charter for %s\n' "$id" > "$home/data/charter.md"
-}
-
 run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
   shift 4
@@ -165,7 +157,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions --settings '{\"preferredNotifChannel\":\"notifications_disabled\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -429,7 +421,7 @@ test_claude_threads_model_and_effort() {
   expect_code 0 "$status" "claude spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "claude --dangerously-skip-permissions --model 'sonnet' --effort 'high'" \
+  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"preferredNotifChannel\":\"notifications_disabled\"}' --model 'sonnet' --effort 'high'" \
     "claude launch did not thread model and effort flags"
   assert_not_contains "$launch" "--tui-mode" "non-Pi launches must not receive Pi's TUI mode override"
   pass "claude receives --model and --effort profile flags"
@@ -718,28 +710,6 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
   pass "pi-signed refuses safely and actionably when the selected executable is unavailable"
 }
 
-test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
-  local rec id sm out status launch
-  id=profile-pi-signed-secondmate-z8d
-  rec=$(make_spawn_case profile-pi-signed-secondmate codex "$id")
-  read_case_record "$rec"
-  printf '%s\n' pi-signed > "$HOME_DIR/config/secondmate-harness"
-  sm="$CASE_DIR/secondmate-home"
-  make_seeded_secondmate_home "$sm" "$id"
-  sm=$(cd "$sm" && pwd -P)
-
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
-  status=$?
-  expect_code 0 "$status" "pi-signed persistent secondmate spawn should succeed"
-  assert_contains "$out" "spawned $id harness=pi-signed kind=secondmate" \
-    "pi-signed secondmate spawn did not preserve its runtime identity"
-  assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
-  launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
-    "pi-signed secondmate did not force the regular TUI with Pi's primary extension launch shape"
-  pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
-}
-
 test_batch_forwards_shared_profile_flags() {
   local rec id1 id2 out status
   id1=profile-batch-a-z9
@@ -808,22 +778,57 @@ test_non_claude_harness_ignores_config_dir() {
   pass "non-claude harnesses do not receive the claude CLAUDE_CONFIG_DIR prefix"
 }
 
-test_active_dispatch_profile_does_not_block_secondmate_launch() {
-  local rec id sm out status
-  id=profile-secondmate-z16
-  rec=$(make_spawn_case profile-secondmate codex "$id")
+# A fresh spawn changes which tasks a home has, so it must refuse rather than
+# publish while another operation owns that home's task set, and a refused spawn
+# must leave no record, no endpoint, and no lock of its own behind.
+test_fresh_spawn_refuses_while_the_task_set_is_locked() {
+  local rec id out status lock holder i=0
+  id=profile-task-set-z17
+  rec=$(make_spawn_case profile-task-set codex "$id")
   read_case_record "$rec"
-  enable_dispatch_profile "$HOME_DIR"
-  sm="$CASE_DIR/secondmate-home"
-  make_seeded_secondmate_home "$sm" "$id"
+  lock="$HOME_DIR/state/.task-set.lock"
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$lock" || exit 1
+    sleep 30
+  ) >/dev/null 2>&1 &
+  holder=$!
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || { kill "$holder" 2>/dev/null; fail "could not stage a held task-set lock"; }
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
-  expect_code 0 "$status" "secondmate spawn should be exempt from the dispatch-profile explicit harness requirement"
-  assert_contains "$out" "spawned $id harness=codex kind=secondmate" "secondmate launch did not use secondmate harness resolution"
-  assert_grep "kind=secondmate" "$HOME_DIR/state/$id.meta" "secondmate meta missing kind=secondmate"
-  assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
-  pass "active crew-dispatch profile does not block secondmate launches"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  expect_code 1 "$status" "a fresh spawn must refuse while the task set is locked"
+  assert_contains "$out" "task set is locked" "the spawn refusal did not name the task-set contention"
+  assert_absent "$HOME_DIR/state/$id.meta" "a refused spawn still published a durable record"
+  assert_absent "$HOME_DIR/state/.spawn-$id.lock" "a refused spawn left its own task lock behind"
+  [ ! -s "$LAUNCH_LOG" ] || fail "a refused spawn typed a launch command"
+  pass "a fresh spawn refuses to publish while another operation owns the task set"
+}
+
+# The retired persistent-home spawn flags no longer exist: each is refused as an
+# unknown option before any endpoint or task record is created, rather than
+# being mistaken for a positional project or harness.
+test_retired_spawn_flags_are_unknown_options() {
+  local rec id out status flag
+  id=profile-retired-flags-z16
+  rec=$(make_spawn_case profile-retired-flags codex "$id")
+  read_case_record "$rec"
+  for flag in --secondmate --traceparent=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01; do
+    out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off "$flag")
+    status=$?
+    expect_code 1 "$status" "$flag should be refused as an unknown option"
+    assert_contains "$out" "unknown option: $flag" "$flag refusal did not name the unknown option"
+    assert_absent "$HOME_DIR/state/$id.meta" "$flag refusal wrote task metadata"
+    [ ! -s "$LAUNCH_LOG" ] || fail "$flag refusal typed a launch command"
+  done
+  pass "retired spawn flags are refused as unknown options before any endpoint exists"
 }
 
 test_no_profile_keeps_claude_profile_defaults
@@ -851,11 +856,11 @@ test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
-test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
 test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
-test_active_dispatch_profile_does_not_block_secondmate_launch
+test_fresh_spawn_refuses_while_the_task_set_is_locked
+test_retired_spawn_flags_are_unknown_options
 
 echo "# all fm-spawn-dispatch-profile tests passed"

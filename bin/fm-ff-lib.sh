@@ -25,9 +25,8 @@
 # shared default branch or any other worktree's checkout.
 
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
-# fm-spawn.sh's --secondmate path calls secondmate_registry_* functions without
-# sourcing this lib itself, relying on this transitive source; keep it even
-# though ff_target no longer uses it directly.
+# live_secondmate_meta_records falls back to secondmate_registry_field for a
+# home= missing from an older meta record.
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
 

@@ -117,6 +117,7 @@ init_changed_fixture_repo() {
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
+  : >"$repo/tests/retired-fixture.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
@@ -169,6 +170,13 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   git -C "$repo" add .agents .claude .pi
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm non-bin-source-change
+
+  git -C "$repo" rm -q tests/retired-fixture.sh
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) \
+    || fail "a deleted test support file must not fail changed selection"
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm retire-fixture
+  (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD~1) >/dev/null \
+    || fail "a committed test support file deletion must not fail changed selection"
 
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e

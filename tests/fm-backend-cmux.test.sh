@@ -1075,20 +1075,6 @@ test_list_live_filters_by_title_prefix() {
   pass "fm_backend_cmux_list_live: lists only this home's scoped task workspaces using plain fm-<id> labels"
 }
 
-# --- fm-spawn.sh: --secondmate refuses backend=cmux --------------------------
-
-test_secondmate_spawn_refuses_cmux_backend() {
-  local dir state data config projects out status
-  dir="$TMP_ROOT/secondmate-refuse"; state="$dir/state"; data="$dir/data"; config="$dir/config"; projects="$dir/projects"
-  mkdir -p "$state" "$data" "$config" "$projects"
-  out=$( FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" FM_PROJECTS_OVERRIDE="$projects" \
-    "$ROOT/bin/fm-spawn.sh" sm-cmux-test --secondmate --backend cmux 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "fm-spawn.sh should refuse a --secondmate spawn with --backend cmux"
-  assert_contains "$out" "does not support --secondmate" "fm-spawn.sh did not report the cmux secondmate refusal"
-  pass "fm-spawn.sh: refuses backend=cmux for --secondmate spawns (mirrors Orca's refusal; no secondmate launch design exists yet)"
-}
-
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
 
@@ -1152,4 +1138,3 @@ test_kill_adds_sibling_when_last_in_window
 test_kill_is_best_effort_when_close_workspace_fails
 test_kill_recovers_stale_target_by_label
 test_list_live_filters_by_title_prefix
-test_secondmate_spawn_refuses_cmux_backend

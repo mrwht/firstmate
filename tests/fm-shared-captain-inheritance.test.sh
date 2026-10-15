@@ -287,30 +287,6 @@ new_git_world() {
   printf '%s|%s|%s|%s\n' "$w" "$root" "$home" "$w/sm"
 }
 
-test_spawn_convergence_point_copies_shared_file() {
-  local rec w root home sm fakebin data_override
-  rec=$(new_git_world spawn-point)
-  IFS='|' read -r w root home sm <<EOF
-$rec
-EOF
-  data_override="$w/primary-data-override"
-  mkdir -p "$data_override"
-  write_shared "$data_override/captain-shared.md" "shared from override"
-  fakebin=$(make_fake_spawn_toolchain "$w")
-
-  PATH="$fakebin:$BASE_PATH" TMUX='' \
-    FM_ROOT_OVERRIDE="$root" FM_HOME="$home" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$data_override" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" sm "$sm" codex --secondmate >/dev/null 2>&1 || true
-
-  cmp -s "$data_override/captain-shared.md" "$sm/data/captain-shared.md" \
-    || fail "spawn convergence point did not copy shared captain preferences from FM_DATA_OVERRIDE"
-  assert_shared_readonly "$sm/data/captain-shared.md"
-  pass "spawn convergence point propagates data/captain-shared.md from FM_DATA_OVERRIDE"
-}
-
 test_config_push_convergence_point_updates_changed_source() {
   local rec w root home sm data_override out
   rec=$(new_git_world config-push-point)
@@ -366,7 +342,6 @@ test_first_copy_readonly_and_local_files_preserved
 test_drift_quarantine_collision_and_repeated_convergence
 test_missing_source_mirrors_absence_without_losing_local_bytes
 test_unsafe_artifacts_and_failure_restore_readonly_mode
-test_spawn_convergence_point_copies_shared_file
 test_config_push_convergence_point_updates_changed_source
 test_session_start_digest_labels_shared_file_and_read_once_rule
 

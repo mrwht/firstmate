@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the local-HEAD secondmate sync: every secondmate home tracks the
 # PRIMARY firstmate checkout's current default-branch commit by a purely LOCAL
-# fast-forward (no origin fetch). bin/fm-spawn.sh drives it before launching a
-# secondmate, sharing the ff machinery in bin/fm-ff-lib.sh.
+# fast-forward (no origin fetch), through the ff machinery in bin/fm-ff-lib.sh.
 #
 # The guarantees under test:
 #   - The shared ff helper, driven with a LOCAL commit base, advances a behind
@@ -10,8 +9,6 @@
 #     and refuses - leaving work untouched - on a dirty, diverged, or
 #     in-flight (feature-branch) home.
 #   - No origin fetch happens in the local-HEAD sync path.
-#   - Spawning a secondmate fast-forwards its worktree to the primary's HEAD
-#     before launch, or warns and launches unchanged when the sync is skipped.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -257,77 +254,6 @@ SH
   pass "T6 no fetch: the local-HEAD sync never invokes git fetch"
 }
 
-# --- T10: spawning a secondmate fast-forwards its worktree before launch ------
-test_spawn_fast_forwards_before_launch() {
-  local w c1 c2 fakebin
-  w=$(new_world spawn-ff)
-  c1=$(head_of "$w/main")
-  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
-  printf 'sm\n' > "$w/sm/.fm-secondmate-home"
-  mkdir -p "$w/sm/data"
-  printf 'charter\n' > "$w/sm/data/charter.md"
-  bump_primary "$w" instr
-  c2=$(head_of "$w/main")
-  [ "$(head_of "$w/sm")" = "$c1" ] || fail "precondition: home should start behind the primary"
-
-  # tmux stub: accept every subcommand, print nothing (so no window pre-exists).
-  fakebin="$w/fakebin"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-
-  PATH="$fakebin:$BASE_PATH" TMUX='' \
-    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \
-    FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
-    FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
-    FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" sm "$w/sm" codex --secondmate >/dev/null 2>&1 || true
-
-  [ "$(head_of "$w/sm")" = "$c2" ] \
-    || fail "spawn did not fast-forward the secondmate worktree to the primary's HEAD"
-  pass "T10 spawn fast-forwards a secondmate worktree to the primary's local HEAD before launch"
-}
-
-# --- T11: spawn warns when pre-launch sync is skipped ------------------------
-test_spawn_warns_when_sync_skipped_before_launch() {
-  local w c1 before fakebin err
-  w=$(new_world spawn-skip)
-  c1=$(head_of "$w/main")
-  git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
-  printf 'sm\n' > "$w/sm/.fm-secondmate-home"
-  mkdir -p "$w/sm/data"
-  printf 'charter\n' > "$w/sm/data/charter.md"
-  bump_primary "$w" instr
-  printf 'uncommitted local edit\n' >> "$w/sm/AGENTS.md"
-  before=$(head_of "$w/sm")
-
-  fakebin="$w/fakebin"
-  err="$w/spawn.err"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-  chmod +x "$fakebin/tmux"
-
-  PATH="$fakebin:$BASE_PATH" TMUX='' \
-    FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \
-    FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
-    FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
-    FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" sm "$w/sm" codex --secondmate >/dev/null 2>"$err" || true
-
-  assert_contains "$(cat "$err")" \
-    "warning: secondmate sm sync skipped before launch: dirty working tree" \
-    "spawn warning reports the skipped sync reason"
-  [ "$(head_of "$w/sm")" = "$before" ] || fail "dirty spawn home HEAD moved"
-  grep -q 'uncommitted local edit' "$w/sm/AGENTS.md" || fail "dirty spawn edit was discarded"
-  pass "T11 spawn warns when pre-launch sync is skipped"
-}
-
 # --- T12: a freshly seeded home reads clean once the primary ignores the marker -
 # The seed marker used to leave every home permanently dirty: bin/fm-fleet-sync.sh
 # and any other plain `git status --porcelain` check counts the untracked marker,
@@ -406,8 +332,6 @@ test_ff_dirty
 test_ff_diverged
 test_ff_inflight_feature_branch
 test_no_fetch_in_local_path
-test_spawn_fast_forwards_before_launch
-test_spawn_warns_when_sync_skipped_before_launch
 test_seed_marker_clean_when_gitignored
 test_seed_marker_converges_existing_home
 test_seed_marker_does_not_mask_real_dirt

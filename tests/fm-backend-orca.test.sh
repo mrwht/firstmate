@@ -526,33 +526,6 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
   pass "fm-spawn.sh --backend orca: reuses implicit terminal, records metadata, launches harness"
 }
 
-test_spawn_refuses_orca_secondmate_before_home_mutation() {
-  local home subhome data state config id out status
-  id="orcasmz1"
-  home="$TMP_ROOT/secondmate-refusal-home"
-  subhome="$TMP_ROOT/secondmate-refusal-subhome"
-  data="$home/data"
-  state="$home/state"
-  config="$home/config"
-  mkdir -p "$data" "$state" "$config" "$subhome/bin" "$subhome/data" "$subhome/state" "$subhome/projects"
-  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
-  printf 'firstmate\n' > "$subhome/AGENTS.md"
-  printf 'claude\n' > "$config/crew-harness"
-  touch "$state/.last-watcher-beat"
-  set +e
-  out=$( FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_SPAWN_NO_GUARD=1 \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$subhome" claude --backend orca --secondmate 2>&1 )
-  status=$?
-  set +e
-  [ "$status" -ne 0 ] || fail "backend=orca --secondmate should be refused"
-  assert_contains "$out" "backend=orca does not support --secondmate spawns yet" \
-    "orca secondmate refusal should happen at backend selection"
-  assert_absent "$subhome/config/crew-harness" \
-    "orca secondmate refusal should not propagate inherited local material into the secondmate home"
-  pass "fm-spawn.sh --backend orca --secondmate: refuses before secondmate-home mutation"
-}
-
 test_spawn_refuses_orca_when_runtime_not_ready() {
   local proj data state config id out status
   id="orcaruntimez6"
@@ -1163,130 +1136,6 @@ test_teardown_refuses_orca_worktree_without_terminal_handle() {
   pass "fm-teardown.sh backend=orca: refuses incomplete worktree-only endpoint metadata before runtime dispatch"
 }
 
-test_secondmate_force_teardown_removes_orca_child_via_orca() {
-  local home subhome childproj childwt child_id neutral out rc
-  home="$TMP_ROOT/orca-child-parent"
-  subhome="$TMP_ROOT/orca-child-secondmate"
-  childproj="$subhome/projects/alpha"
-  childwt="$TMP_ROOT/orca-child-worktree"
-  child_id="orcachildz6"
-  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
-  printf 'domain\n' > "$subhome/.fm-secondmate-home"
-  fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
-  fm_write_meta "$home/state/domain.meta" \
-    "window=firstmate:fm-domain" "worktree=$subhome" "project=$subhome" \
-    "harness=echo" "kind=secondmate" "mode=secondmate" "yolo=off" \
-    "home=$subhome" "projects=alpha"
-  printf '%s\n' "- domain - Orca child cleanup (home: $subhome; scope: orca cleanup; projects: alpha; added 2026-07-03)" \
-    > "$home/data/secondmates.md"
-  fm_write_meta "$subhome/state/$child_id.meta" \
-    "window=fm-$child_id" "endpoint_task_id=$child_id" \
-    "terminal=term-child-cleanup" "worktree=$childwt" "project=$childproj" \
-    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-child-cleanup"
-  orca_case secondmate-child-cleanup
-  printf '{"ok":true,"result":{"worktree":{"id":"wt-child-cleanup","path":"%s"}}}\n' "$childwt" > "$RESP/1.out"
-  printf '{"ok":true,"result":{"worktree":{"id":"wt-child-cleanup","path":"%s"}}}\n' "$childwt" > "$RESP/2.out"
-  printf '{"ok":true,"result":{}}\n' > "$RESP/3.out"
-  printf '{"ok":true,"result":{}}\n' > "$RESP/4.out"
-  add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
-  set +e
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
-  rc=$?
-  set -e
-  expect_code 0 "$rc" "forced secondmate teardown should remove Orca child work through Orca"$'\n'"$out"
-  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close'$'\x1f''--terminal'$'\x1f''term-child-cleanup'$'\x1f''--json' \
-    "child cleanup did not close the recorded Orca terminal"
-  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f''id:wt-child-cleanup'$'\x1f''--force'$'\x1f''--json' \
-    "child cleanup did not remove the Orca worktree through orca worktree rm"
-  assert_not_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close'$'\x1f''--terminal'$'\x1f'"fm-$child_id" \
-    "child cleanup closed the stable alias instead of the Orca terminal"
-  assert_absent "$home/state/domain.meta" "parent metadata should be removed after forced teardown"
-  pass "fm-teardown.sh --force: removes Orca secondmate children through Orca"
-}
-
-test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch() {
-  local home subhome childproj childwt other_wt child_id neutral out rc
-  home="$TMP_ROOT/orca-child-mismatch-parent"
-  subhome="$TMP_ROOT/orca-child-mismatch-secondmate"
-  childproj="$subhome/projects/alpha"
-  childwt="$TMP_ROOT/orca-child-mismatch-worktree"
-  other_wt="$TMP_ROOT/orca-child-mismatch-other-worktree"
-  child_id="orcachildmismatchz1"
-  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
-  printf 'domain\n' > "$subhome/.fm-secondmate-home"
-  fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
-  git -C "$childproj" worktree add --quiet -b "fm/$child_id-other" "$other_wt"
-  fm_write_meta "$home/state/domain.meta" \
-    "window=firstmate:fm-domain" "worktree=$subhome" "project=$subhome" \
-    "harness=echo" "kind=secondmate" "mode=secondmate" "yolo=off" \
-    "home=$subhome" "projects=alpha"
-  printf '%s\n' "- domain - Orca child cleanup (home: $subhome; scope: orca cleanup; projects: alpha; added 2026-07-03)" \
-    > "$home/data/secondmates.md"
-  fm_write_meta "$subhome/state/$child_id.meta" \
-    "window=fm-$child_id" "endpoint_task_id=$child_id" \
-    "terminal=term-child-mismatch" "worktree=$childwt" "project=$childproj" \
-    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-child-mismatch"
-  orca_case secondmate-child-mismatch
-  printf '{"ok":true,"result":{"worktree":{"id":"wt-child-mismatch","path":"%s"}}}\n' "$other_wt" > "$RESP/1.out"
-  add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
-  set +e
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "forced secondmate teardown should refuse mismatched Orca child id/path"
-  assert_contains "$out" "not inspected worktree" \
-    "mismatched Orca child worktree path refusal should name the mismatch"
-  assert_not_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close' \
-    "refused mismatched Orca child cleanup should not close terminals"
-  assert_not_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm' \
-    "refused mismatched Orca child cleanup should not remove worktrees"
-  assert_present "$home/state/domain.meta" "refused forced secondmate teardown should preserve parent metadata"
-  pass "fm-teardown.sh --force: refuses Orca child id/path mismatches"
-}
-
-test_secondmate_force_teardown_refuses_partial_orca_child() {
-  local home subhome childproj childwt child_id neutral out rc
-  home="$TMP_ROOT/orca-partial-child-parent"
-  subhome="$TMP_ROOT/orca-partial-child-secondmate"
-  childproj="$subhome/projects/alpha"
-  childwt="$TMP_ROOT/orca-partial-child-worktree"
-  child_id="orcapartialz9"
-  mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
-  printf 'domain\n' > "$subhome/.fm-secondmate-home"
-  fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
-  fm_write_meta "$home/state/domain.meta" \
-    "window=firstmate:fm-domain" "worktree=$subhome" "project=$subhome" \
-    "harness=echo" "kind=secondmate" "mode=secondmate" "yolo=off" \
-    "home=$subhome" "projects=alpha"
-  printf '%s\n' "- domain - Orca partial child cleanup (home: $subhome; scope: orca cleanup; projects: alpha; added 2026-07-03)" \
-    > "$home/data/secondmates.md"
-  fm_write_meta "$subhome/state/$child_id.meta" \
-    "window=fm-$child_id" "endpoint_task_id=$child_id" \
-    "worktree=$childwt" "project=$childproj" \
-    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-partial-child"
-  orca_case secondmate-partial-child-cleanup
-  add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
-  set +e
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "forced secondmate teardown accepted a child with no terminal identity"
-  assert_contains "$out" "missing terminal" "partial child refusal did not explain the incomplete endpoint"
-  [ ! -s "$LOG" ] || fail "partial child refusal dispatched to Orca or tmux"
-  assert_present "$home/state/domain.meta" "partial child refusal removed parent metadata"
-  assert_present "$subhome/state/$child_id.meta" "partial child refusal removed child metadata"
-  pass "fm-teardown.sh --force: refuses partial Orca secondmate children before runtime dispatch"
-}
-
 test_dispatcher_sources_orca_and_routes_primitives() {
   local out
   orca_case dispatch
@@ -1325,7 +1174,6 @@ test_worktree_and_terminal_helpers_parse_json
 test_worktree_create_removes_worktree_when_path_missing
 test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails
 test_spawn_writes_orca_metadata_and_launches_harness
-test_spawn_refuses_orca_secondmate_before_home_mutation
 test_spawn_refuses_orca_when_runtime_not_ready
 test_spawn_refuses_orca_nonisolated_worktree
 test_spawn_removes_orca_worktree_when_terminal_create_fails
@@ -1345,6 +1193,3 @@ test_ship_teardown_refuses_orca_unresolvable_worktree_id
 test_ship_teardown_refuses_orca_id_path_mismatch
 test_teardown_refuses_orca_missing_worktree_id
 test_teardown_refuses_orca_worktree_without_terminal_handle
-test_secondmate_force_teardown_removes_orca_child_via_orca
-test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch
-test_secondmate_force_teardown_refuses_partial_orca_child

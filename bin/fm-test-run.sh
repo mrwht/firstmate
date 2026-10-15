@@ -167,8 +167,8 @@ family_for_basename() {
       ;;
     fm-backlog-handoff.test.sh|fm-on.test.sh|fm-remote-backlog-handoff.test.sh|\
     fm-remote-doctor.test.sh|fm-remote-job.test.sh|\
-    fm-remote-reply.test.sh|fm-remote-secondmate-lifecycle-e2e.test.sh|\
-    fm-secondmate-harness.test.sh|fm-secondmate-lifecycle-e2e.test.sh|\
+    fm-remote-reply.test.sh|\
+    fm-secondmate-harness.test.sh|\
     fm-secondmate-safety.test.sh|\
     fm-startup-memory-budget.test.sh|fm-stow-cascade.test.sh|\
     fm-shared-captain-inheritance.test.sh)
@@ -416,7 +416,6 @@ tests/fm-procevent.test.sh 42789
 tests/fm-public-followup.test.sh 23365
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
 tests/fm-secondmate-harness.test.sh 87895
-tests/fm-secondmate-lifecycle-e2e.test.sh 4929
 tests/fm-secondmate-safety.test.sh 24432
 tests/fm-session-start.test.sh 37289
 tests/fm-sessionstart-nudge.test.sh 264
@@ -1006,7 +1005,11 @@ families_for_changed_path() {
       fi
       ;;
     tests/*)
-      printf '%s\n' "__unmapped__:$path"
+      # A deleted test support file has no consuming suite left to select, the
+      # same rule the bin/* case above applies.
+      if [ -e "$path" ]; then
+        printf '%s\n' "__unmapped__:$path"
+      fi
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;

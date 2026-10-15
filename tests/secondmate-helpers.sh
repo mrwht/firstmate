@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/secondmate-helpers.sh - shared fixtures and mocks for the secondmate
-# suites (fm-secondmate-lifecycle-e2e and fm-secondmate-safety).
+# suites (fm-secondmate-safety and fm-backlog-handoff).
 #
 # These mocks encode secondmate-lifecycle behavior (fake tmux that logs window
 # ops, fake treehouse that leases/returns homes, fake no-mistakes that records
@@ -161,14 +161,6 @@ SH
   git -C "$home" init -q
   git -C "$home" add AGENTS.md bin/fm-guard.sh
   git -C "$home" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
-}
-
-# Scaffold a filled secondmate charter brief under <home>/data/<id>/brief.md.
-# Args: home id charter [project...]
-scaffold_secondmate_charter() {
-  local home=$1 id=$2 charter=$3
-  shift 3
-  FM_HOME="$home" FM_SECONDMATE_CHARTER="$charter" "$ROOT/bin/fm-brief.sh" "$id" --secondmate "$@" >/dev/null
 }
 
 # Make a directory look like a genuine seeded secondmate home (for handoff tests).

@@ -3,11 +3,10 @@
 # end-to-end real-herdr test for the P3 "workspace-per-home" pass (AGENTS.md
 # task herdr-sm-spaces-k4). Drives the REAL bin/fm-spawn.sh and
 # bin/fm-teardown.sh (not just adapter primitives), because the requirement
-# under test - a --secondmate spawn's tab landing in the secondmate's OWN
-# herdr workspace, and a crewmate spawned FROM a secondmate home landing there
-# too - only exists at fm-spawn.sh's own home-shadowing logic (the herdr case
-# arm) and at fm_backend_herdr_workspace_label's FM_HOME read; neither is
-# exercised by the adapter-primitive smoke test.
+# under test - a crewmate spawned FROM a second marked home landing in that
+# home's OWN herdr workspace - only exists at fm_backend_herdr_workspace_label's
+# FM_HOME read through the real spawn path, which the adapter-primitive smoke
+# test does not exercise.
 #
 # Mirrors tests/fm-backend-autodetect-smoke.test.sh's isolated-session
 # convention: a private throwaway HERDR_SESSION (never the captain's
@@ -20,12 +19,9 @@
 # Covers, at minimum (per the task brief):
 #   - a primary-shaped home (no .fm-secondmate-home marker) spawning a
 #     crewmate into the "firstmate" workspace
-#   - a secondmate-shaped home (with .fm-secondmate-home) getting its own
-#     labeled workspace when the PRIMARY spawns it (fm-spawn.sh's FM_HOME
-#     shadow for --secondmate)
-#   - a crewmate spawned FROM that secondmate-shaped home (the secondmate
-#     running its OWN fm-spawn.sh) landing in the secondmate's own workspace -
-#     this exact path has never run before this test
+#   - a crewmate spawned FROM a marked home (with .fm-secondmate-home, running
+#     its OWN fm-spawn.sh) landing in that home's own labeled workspace,
+#     distinct from the primary's
 #   - teardown closing the right tab (and no other)
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
@@ -96,7 +92,6 @@ mkdir -p "$SM_HOME/state" "$SM_HOME/data/cm2" "$SM_HOME/config" "$SM_HOME/projec
 printf 'off\n' > "$SM_HOME/config/herdr-presentation-spaces"
 printf '# scratch secondmate home AGENTS.md placeholder\n' > "$SM_HOME/AGENTS.md"
 printf 'e2esm1\n' > "$SM_HOME/.fm-secondmate-home"
-printf 'trivial e2e secondmate charter: nothing to do.\n' > "$SM_HOME/data/charter.md"
 printf 'trivial e2e secondmate-owned crewmate brief: nothing to do.\n' > "$SM_HOME/data/cm2/brief.md"
 
 make_scratch_project() {  # <dir>
@@ -140,35 +135,8 @@ CM1_WS_LABEL=$(herdr workspace list --session "$SESSION" 2>&1 | jq -r --arg id "
 [ "$CM1_WS_LABEL" = "firstmate" ] || fail "a primary-shaped home's crewmate should land in the 'firstmate' workspace, got '$CM1_WS_LABEL'"
 pass "real herdr E2E: the primary-shaped home's crewmate landed in the 'firstmate' workspace"
 
-# --- 2. the PRIMARY spawns a secondmate: its tab lands in the SECONDMATE's own space ---
-# (fm-spawn.sh's herdr case arm shadows FM_HOME to the secondmate's home for
-# exactly this call - AGENTS.md task herdr-sm-spaces-k4, requirement 3.)
-
-SM_OUT="$TMP_ROOT/sm.out"; SM_ERR="$TMP_ROOT/sm.err"
-FM_SPAWN_NO_GUARD=1 FM_HOME="$PRIMARY_HOME" FM_ROOT_OVERRIDE="$ROOT" \
-  "$ROOT/bin/fm-spawn.sh" e2esm1 "$SM_HOME" "sh -c 'echo secondmate-launch-ok'" --secondmate --backend herdr \
-  >"$SM_OUT" 2>"$SM_ERR"
-rc=$?
-[ "$rc" -eq 0 ] || fail "the primary's --secondmate spawn of e2esm1 failed"$'\n'"--- stdout ---"$'\n'"$(cat "$SM_OUT")"$'\n'"--- stderr ---"$'\n'"$(cat "$SM_ERR")"
-
-SM_META="$PRIMARY_HOME/state/e2esm1.meta"
-[ -f "$SM_META" ] || fail "no meta written for e2esm1 (recorded in the PRIMARY's own state dir, since the primary did the spawning)"
-assert_contains_local "$(cat "$SM_META")" "kind=secondmate" "e2esm1 meta missing kind=secondmate"
-assert_contains_local "$(cat "$SM_META")" "backend=herdr" "e2esm1 meta missing backend=herdr"
-assert_contains_local "$(cat "$SM_META")" "home=$SM_HOME" "e2esm1 meta does not record its own home"
-SM_PANE=$(grep '^herdr_pane_id=' "$SM_META" | cut -d= -f2-)
-[ -n "$SM_PANE" ] || fail "e2esm1 meta missing herdr_pane_id"
-pass "real herdr E2E: the primary spawns a --secondmate task on the herdr backend"
-
-SM_WSID=$(herdr pane get "$SM_PANE" --session "$SESSION" 2>/dev/null | jq -r '.result.pane.workspace_id // empty')
-[ -n "$SM_WSID" ] || fail "could not read e2esm1's pane workspace_id"
-[ "$SM_WSID" != "$CM1_WSID" ] || fail "the secondmate's tab must NOT land in the primary's workspace, but it shares $CM1_WSID"
-SM_WS_LABEL=$(herdr workspace list --session "$SESSION" 2>&1 | jq -r --arg id "$SM_WSID" '.result.workspaces[]? | select(.workspace_id == $id) | .label')
-[ "$SM_WS_LABEL" = "2ndmate-e2esm1" ] || fail "a --secondmate spawn should land in '2ndmate-<id>', got '$SM_WS_LABEL'"
-pass "real herdr E2E: a --secondmate spawn by the PRIMARY lands in the SECONDMATE's own labeled workspace, distinct from the primary's"
-
-# --- 3. a crewmate spawned FROM the secondmate-shaped home lands in the SAME
-# secondmate workspace (this exact path has never run before this test) -----
+# --- 2. a crewmate spawned FROM the secondmate-shaped home lands in that
+# home's OWN labeled workspace ---------------------------------------------
 
 CM2_OUT="$TMP_ROOT/cm2.out"; CM2_ERR="$TMP_ROOT/cm2.err"
 FM_SPAWN_NO_GUARD=1 FM_HOME="$SM_HOME" FM_ROOT_OVERRIDE="$ROOT" \
@@ -190,25 +158,25 @@ CM2_CAPTURE=$(fm_backend_herdr_capture "$SESSION:$CM2_PANE" 30) || fail "capture
 assert_contains_local "$CM2_CAPTURE" "sm-crew-ok" "cm2's raw launch command did not run in its herdr pane"
 
 CM2_WSID=$(herdr pane get "$CM2_PANE" --session "$SESSION" 2>/dev/null | jq -r '.result.pane.workspace_id // empty')
-[ "$CM2_WSID" = "$SM_WSID" ] || fail "a crewmate spawned FROM the secondmate home should land in the SAME workspace as the secondmate's own task ($SM_WSID), got '$CM2_WSID'"
+[ -n "$CM2_WSID" ] || fail "could not read cm2's pane workspace_id"
 [ "$CM2_WSID" != "$CM1_WSID" ] || fail "a crewmate spawned FROM the secondmate home must NOT land in the primary's workspace"
-pass "real herdr E2E: a crewmate spawned FROM the secondmate-shaped home lands in the secondmate's OWN workspace - falls out of per-home resolution, no glue needed"
+CM2_WS_LABEL=$(herdr workspace list --session "$SESSION" 2>&1 | jq -r --arg id "$CM2_WSID" '.result.workspaces[]? | select(.workspace_id == $id) | .label')
+[ "$CM2_WS_LABEL" = "2ndmate-e2esm1" ] || fail "a crewmate spawned FROM the secondmate home should land in '2ndmate-<id>', got '$CM2_WS_LABEL'"
+pass "real herdr E2E: a crewmate spawned FROM the secondmate-shaped home lands in that home's OWN labeled workspace - falls out of per-home resolution, no glue needed"
 
-# --- 4. list-live recovery: each home sees only its own tabs ---------------
+# --- 3. list-live recovery: each home sees only its own tabs ---------------
 
 PRIMARY_LIVE=$(FM_HOME="$PRIMARY_HOME" fm_backend_herdr_list_live "$SESSION")
 assert_contains_local "$PRIMARY_LIVE" "fm-cm1" "the primary home's list_live did not see its own task"
-assert_not_contains_local "$PRIMARY_LIVE" "fm-e2esm1" "the primary home's list_live must not see the secondmate's own task"
 assert_not_contains_local "$PRIMARY_LIVE" "fm-cm2" "the primary home's list_live must not see the secondmate-owned crewmate's task"
 pass "real herdr E2E: list_live from the primary's own context sees only the primary's own task"
 
 SM_LIVE=$(FM_HOME="$SM_HOME" fm_backend_herdr_list_live "$SESSION")
-assert_contains_local "$SM_LIVE" "fm-e2esm1" "the secondmate home's list_live did not see its own task"
 assert_contains_local "$SM_LIVE" "fm-cm2" "the secondmate home's list_live did not see the crewmate spawned from it"
 assert_not_contains_local "$SM_LIVE" "fm-cm1" "the secondmate home's list_live must not see the primary's task"
-pass "real herdr E2E: list_live from the secondmate's own context sees only tasks in the secondmate's own workspace (both its own tab and its crewmate's)"
+pass "real herdr E2E: list_live from the secondmate home's own context sees only its own workspace's task"
 
-# --- 5. teardown closes the RIGHT tab, and no other ------------------------
+# --- 4. teardown closes the RIGHT tab, and no other ------------------------
 
 TD1_OUT="$TMP_ROOT/td1.out"
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$PRIMARY_HOME/state" FM_DATA_OVERRIDE="$PRIMARY_HOME/data" \
@@ -220,14 +188,11 @@ rc=$?
 if herdr pane get "$CM1_PANE" --session "$SESSION" >/dev/null 2>&1; then
   fail "fm-teardown.sh did not close cm1's pane"
 fi
-if ! herdr pane get "$SM_PANE" --session "$SESSION" >/dev/null 2>&1; then
-  fail "tearing down cm1 must not have closed the secondmate's OWN pane (wrong tab closed)"
-fi
 if ! herdr pane get "$CM2_PANE" --session "$SESSION" >/dev/null 2>&1; then
   fail "tearing down cm1 must not have closed cm2's pane (wrong tab closed)"
 fi
 WT1=
-pass "real herdr E2E: tearing down cm1 closes only its own tab - the secondmate's and cm2's tabs survive untouched"
+pass "real herdr E2E: tearing down cm1 closes only its own tab - cm2's tab survives untouched"
 
 TD2_OUT="$TMP_ROOT/td2.out"
 FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$SM_HOME/state" FM_DATA_OVERRIDE="$SM_HOME/data" \
@@ -239,13 +204,8 @@ rc=$?
 if herdr pane get "$CM2_PANE" --session "$SESSION" >/dev/null 2>&1; then
   fail "fm-teardown.sh did not close cm2's pane"
 fi
-if ! herdr pane get "$SM_PANE" --session "$SESSION" >/dev/null 2>&1; then
-  fail "tearing down cm2 must not have closed the secondmate's OWN pane (wrong tab closed)"
-fi
 WT2=
-pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate's own tab (same workspace) survives untouched"
-
-fm_backend_herdr_kill "$SESSION:$SM_PANE"
+pass "real herdr E2E: tearing down cm2 from its own home closes its own tab"
 
 cleanup_all
 trap - EXIT
