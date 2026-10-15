@@ -32,13 +32,13 @@ The wrapper discovers the code root from its own location.
 The active firstmate home is `${FM_HOME:-<code-root>}`.
 It passes both roots and the exact command string to the Node policy owner.
 
-The wrapper fast-allows a command without invoking the Node policy owner only when the command cannot contain the `fm-watch` byte sequence even after the classifier's decoders run.
+The wrapper fast-allows a command without invoking the Node policy owner only when the command cannot contain the `fm-watch` or `fm-claude-stop-autoarm` byte sequence even after the classifier's decoders run.
 The fast path may allow only when both of these hold:
 
-1. The stripped text lacks the `fm-watch` watcher substring, after mirroring the classifier's cheapest byte normalizations - dropping line-continuation and escape backslashes, quotes, and newlines.
+1. The stripped text lacks both the `fm-watch` and `fm-claude-stop-autoarm` substrings, after mirroring the classifier's cheapest byte normalizations - dropping line-continuation and escape backslashes, quotes, and newlines.
 2. The raw command carries no quoting-decoder marker: a `$` immediately followed by a single quote (ANSI-C `$'...'`) or a double quote (bash locale `$"..."`).
 
-Any `fm-watch` match or any quoting-decoder marker delegates to the classifier.
+Any `fm-watch` or `fm-claude-stop-autoarm` match, or any quoting-decoder marker, delegates to the classifier.
 Normalizing first keeps this a strict superset: a protected watcher path obfuscated as `fm-watc\<newline>h-arm.sh` or `fm-"watch"-arm.sh` still delegates, and stripping only those non-alphanumeric bytes can never destroy an existing `fm-watch` run.
 The quoting-decoder marker closes the case the byte strip cannot: `bin/fm-$'\x77'atch-arm.sh` and `bin/fm-$"watch"-arm.sh` both resolve to `bin/fm-watch-arm.sh` only after the classifier decodes the encoded character, so a cheap byte strip would otherwise lose the `fm-watch` bytes and fast-allow them.
 This marker set is coupled to the classifier's decoder set in `bin/fm-arm-command-policy.mjs`: adding any new quote or expansion form the classifier decodes requires extending this marker set in the same change, or the prefilter stops being a strict superset.
@@ -58,12 +58,13 @@ Malformed or unsupported shell syntax that contains a protected command is a sem
 The tokenizer recognizes cooked words with quote provenance, comments, heredoc bodies, shell list operators, pipelines, redirections, command and process substitutions, parenthesized subshells, brace groups, and literal nested execution payloads.
 Quoted text, comments, heredoc bodies, and later argument words are data positions unless a recognized execution sink recursively executes them.
 
-A command word in executed position is a protected execution when its normalized path suffix matches one of the protected watcher scripts:
+A command word in executed position is a protected execution when its normalized path suffix matches one of the protected scripts:
 
 ```text
 bin/fm-watch-arm.sh          (arm; blessed entry point)
 bin/fm-watch-checkpoint.sh   (checkpoint; blessed entry point)
 bin/fm-watch.sh              (watch; protected but never blessed)
+bin/fm-claude-stop-autoarm.sh  (hook; protected but never blessed)
 ```
 
 The relative form, the `<code-root>`-anchored absolute form, and any word ending in `/bin/<script>` all resolve to that identity.
@@ -74,6 +75,10 @@ This covers statically-visible literal words in command position; opaque dynamic
 
 `bin/fm-watch.sh` is protected but is not a blessed entry point.
 A direct `bin/fm-watch.sh` execution - relative, `<code-root>`-anchored, `$VAR`-prefixed, or `~`-prefixed - always denies with `watcher-direct`, whose reason points the caller at `bin/fm-watch-arm.sh` and `bin/fm-watch-checkpoint.sh`.
+
+`bin/fm-claude-stop-autoarm.sh` is Claude's Stop hook, not a model-run command.
+A direct execution of it in any of those forms denies with `hook-direct`, because a hand-run really arms a watcher under the tool call.
+The hook itself also refuses to arm without a Claude Stop payload on stdin, so this deny is the early, visible half of that guard.
 
 The same bytes in an argument, comment, assertion, documentation query, Python string, `printf`, or `tmux send-keys` payload are data and do not make the outer command relevant.
 
@@ -139,6 +144,7 @@ Every semantic deny includes one stable code in square brackets before its prose
 | `broad-watcher-kill` | An actual broad process kill targets the watcher. |
 | `unclassifiable-protected-command` | Malformed or unsupported syntax contains a protected command and cannot be safely classified. |
 | `watcher-direct` | A direct `bin/fm-watch.sh` execution; the watcher must be reached through `bin/fm-watch-arm.sh` or `bin/fm-watch-checkpoint.sh`. |
+| `hook-direct` | A direct `bin/fm-claude-stop-autoarm.sh` execution; that hook arms automatically when a Claude turn ends. |
 
 Reason codes are the stable contract for tests and adapters.
 Prose may improve without changing adapter behavior.

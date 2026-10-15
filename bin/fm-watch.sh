@@ -577,13 +577,13 @@ run_check_capture() {
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
   pgid=$(ps -o pgid= -p "$FM_ACTIVE_CHECK_PID" 2>/dev/null | tr -d '[:space:]')
-  trap 'exit 1' HUP INT TERM
+  trap 'trap "" HUP INT TERM; exit 1' HUP INT TERM
   if [ -n "$pgid" ] && [ "$pgid" != "$FM_ACTIVE_CHECK_PGID" ]; then
     fm_active_check_stop || true
     fm_check_output_cleanup
     return 1
   fi
-  [ -z "$FM_CHECK_SIGNAL_PENDING" ] || exit 1
+  [ -z "$FM_CHECK_SIGNAL_PENDING" ] || { trap '' HUP INT TERM; exit 1; }
   wait "$FM_ACTIVE_CHECK_PID" 2>/dev/null || true
   FM_ACTIVE_CHECK_PID=
   fm_active_check_stop || return 1
@@ -710,7 +710,40 @@ fi
   exit 1
 }
 
-if ! fm_lock_try_acquire "$WATCH_LOCK"; then
+# A lock recorded by THIS home's watcher whose identity no longer matches the
+# live process at its pid was left by a watcher whose cleanup never ran, and the
+# pid has since been reused. Clear it under the same steal mutex
+# fm_lock_try_acquire uses for dead holders, so the recheck and clear cannot race
+# another reclaimer, and never signal the unrelated process.
+reclaim_reused_pid_watch_lock() {
+  local held=$1 lock_identity rc=1
+  [ "$(cat "$WATCH_LOCK/fm-home" 2>/dev/null || true)" = "$FM_HOME" ] || return 1
+  [ "$(cat "$WATCH_LOCK/watcher-path" 2>/dev/null || true)" = "$WATCH_PATH" ] || return 1
+  lock_identity=$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)
+  [ -n "$lock_identity" ] || return 1
+  fm_lock_try_acquire "$WATCH_LOCK.steal" || return 1
+  if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$held" ] \
+    && [ "$(cat "$WATCH_LOCK/pid-identity" 2>/dev/null || true)" = "$lock_identity" ] \
+    && ! fm_watcher_lock_matches_pid "$STATE" "$WATCH_PATH" "$held" "$FM_HOME" \
+    && fm_recovery_transition "$WATCHER_DOWNTIME_MARKER" clear-stale-lock "$WATCH_LOCK" downtime; then
+    rc=0
+  fi
+  fm_lock_release "$WATCH_LOCK.steal"
+  return "$rc"
+}
+
+watch_lock_acquired=0
+if fm_lock_try_acquire "$WATCH_LOCK"; then
+  watch_lock_acquired=1
+elif [ -n "${FM_LOCK_HELD_PID:-}" ]; then
+  held_pid=$FM_LOCK_HELD_PID
+  if ! reclaim_reused_pid_watch_lock "$held_pid"; then
+    FM_LOCK_HELD_PID=$held_pid
+  elif fm_lock_try_acquire "$WATCH_LOCK"; then
+    watch_lock_acquired=1
+  fi
+fi
+if [ "$watch_lock_acquired" -ne 1 ]; then
   BEAT="$STATE/.last-watcher-beat"
   if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
     if [ -e "$BEAT" ]; then
@@ -744,6 +777,7 @@ elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
 fi
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
+  trap '' HUP INT TERM
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
     owns_lock=1
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
@@ -762,7 +796,10 @@ watcher_cleanup() {
   return "$cleanup_status"
 }
 trap watcher_cleanup EXIT
-trap 'exit 1' HUP INT TERM
+# The first signal masks the rest before exiting, so a follow-up signal (a
+# harness group TERM plus the arm's re-signal a few ms later) cannot re-enter
+# this trap during watcher_cleanup and abort it before the lock is released.
+trap 'trap "" HUP INT TERM; exit 1' HUP INT TERM
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.

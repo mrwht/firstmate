@@ -151,7 +151,7 @@ printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
 LIVE_OWNER_PID=$!
 printf '%s\n' "$LIVE_OWNER_PID" > "$LIVE_OWNER_HOME/state/.lock"
 LIVE_OWNER_RC=0
-printf '%s\n' '{"session_id":"live-owner-control"}' \
+printf '%s\n' '{"session_id":"live-owner-control","hook_event_name":"Stop"}' \
   | FM_HOME="$LIVE_OWNER_HOME" FM_ROOT_OVERRIDE="$PROJECT" "$FAKE_CLAUDE" -c '"$FM_ROOT_OVERRIDE/bin/fm-claude-stop-autoarm.sh"' \
       >"$LAB/live-owner.out" 2>"$LAB/live-owner.err" || LIVE_OWNER_RC=$?
 [ "$LIVE_OWNER_RC" -eq 0 ] || fail "competing Stop hook returned $LIVE_OWNER_RC while another live session owned the home"

@@ -68,7 +68,7 @@ make_crewmate_worktree_dir() {
 # before invocation. Captures stdout+stderr; exit code on stdout of the caller.
 run_autoarm() {
   local dir=$1 rc=0
-  printf '%s\n' '{"session_id":"sess-autoarm","stop_hook_active":false}' \
+  printf '%s\n' '{"session_id":"sess-autoarm","hook_event_name":"Stop","stop_hook_active":false}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
@@ -122,6 +122,14 @@ sleep 2
 printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
 printf 'signal: task.status done: slow fixture\n'
 exit 0
+SH
+      ;;
+    hang)
+      cat > "$dir/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$$" >> "$FM_HOME/state/arm-ran"
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+sleep 30
 SH
       ;;
     meta-vanishes)
@@ -196,7 +204,7 @@ test_inert_without_session_lock() {
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
   # No state/.lock: run the hook directly (no fake harness, no lock file).
-  out=$(printf '%s\n' '{"session_id":"s"}' | FM_HOME="$dir" bash "$dir/bin/fm-claude-stop-autoarm.sh" 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"s","hook_event_name":"Stop"}' | FM_HOME="$dir" bash "$dir/bin/fm-claude-stop-autoarm.sh" 2>&1); status=$?
   expect_code 0 "$status" "hook must stay inert when no session holds the home lock"
   [ ! -e "$dir/state/arm-ran" ] || fail "hook armed without a session lock"
   pass "auto-arm: inert with no session lock"
@@ -208,7 +216,7 @@ test_reclaims_stale_session_lock_before_arming() {
   : > "$dir/state/task.meta"
   printf '9999999\n' > "$dir/state/.lock"
   write_arm_fixture "$dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale"}' \
+  out=$(printf '%s\n' '{"session_id":"stale","hook_event_name":"Stop"}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/expected-owner"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
@@ -232,7 +240,7 @@ test_inert_when_lock_held_by_other_harness() {
   "$FAKE_CLAUDE" -c 'sleep 60; :' &
   other=$!
   printf '%s\n' "$other" > "$dir/state/.lock"
-  out=$(printf '%s\n' '{"session_id":"s"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"s","hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
   owner_after=$(cat "$dir/state/.lock")
   kill "$other" 2>/dev/null || true
   wait "$other" 2>/dev/null || true
@@ -266,7 +274,7 @@ test_stale_lock_recovery_preserves_afk_and_need_gates() {
   : > "$afk_dir/state/.afk"
   printf '9999999\n' > "$afk_dir/state/.lock"
   write_arm_fixture "$afk_dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale-afk"}' | FM_HOME="$afk_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"stale-afk","hook_event_name":"Stop"}' | FM_HOME="$afk_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
   expect_code 0 "$status" "a stale owner must not widen the AFK gate"
   [ "$(cat "$afk_dir/state/.lock")" = 9999999 ] || fail "AFK stale lock was reclaimed despite away ownership"
   [ ! -e "$afk_dir/state/arm-ran" ] || fail "stale AFK home armed"
@@ -274,7 +282,7 @@ test_stale_lock_recovery_preserves_afk_and_need_gates() {
   idle_dir=$(make_primary_dir "$TMP_ROOT/stale-idle")
   printf '9999999\n' > "$idle_dir/state/.lock"
   write_arm_fixture "$idle_dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale-idle"}' | FM_HOME="$idle_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"stale-idle","hook_event_name":"Stop"}' | FM_HOME="$idle_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
   expect_code 0 "$status" "a stale owner must not widen the supervision-need gate"
   [ "$(cat "$idle_dir/state/.lock")" = 9999999 ] || fail "idle stale lock was reclaimed without supervision need"
   [ ! -e "$idle_dir/state/arm-ran" ] || fail "stale idle home armed"
@@ -294,7 +302,7 @@ test_resolves_outermost_claude_pid_in_nested_bgspare_chain() {
   # hook inert. The inner process records its own pid before running the hook
   # so bash cannot tail-exec-collapse it into the outer pid, which would
   # collapse the two-hop chain this test depends on down to one hop.
-  out=$(printf '%s\n' '{"session_id":"nested"}' \
+  out=$(printf '%s\n' '{"session_id":"nested","hook_event_name":"Stop"}' \
     | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
         "$FAKE_CLAUDE" -c "
@@ -516,9 +524,9 @@ test_single_flight_admits_exactly_one_owner() {
   write_arm_fixture "$dir" slow-actionable
   FM_HOME="$dir" "$FAKE_CLAUDE" -c '
     printf "%s\n" "$$" > "$FM_HOME/state/.lock"
-    printf "%s\n" "{\"session_id\":\"s\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err1" &
+    printf "%s\n" "{\"session_id\":\"s\",\"hook_event_name\":\"Stop\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err1" &
     p1=$!
-    printf "%s\n" "{\"session_id\":\"s\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err2" &
+    printf "%s\n" "{\"session_id\":\"s\",\"hook_event_name\":\"Stop\"}" | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" >/dev/null 2>"$FM_HOME/state/err2" &
     p2=$!
     wait "$p1"; echo $? > "$FM_HOME/state/rc1"
     wait "$p2"; echo $? > "$FM_HOME/state/rc2"
@@ -568,6 +576,118 @@ test_active_in_marked_secondmate_home() {
   pass "auto-arm: active in a marked secondmate home"
 }
 
+test_refuses_to_arm_without_a_stop_payload() {
+  # Only a real Claude Stop payload may arm. A hand-run (the 2026-09-22
+  # `--help` incident), an empty or malformed stdin, or another hook event must
+  # print usage and exit 0 without arming, rewaking, or writing an epoch.
+  local row dir out status payload
+  for row in help empty malformed no-event subagent-stop; do
+    dir=$(make_primary_dir "$TMP_ROOT/refuse-$row")
+    : > "$dir/state/task.meta"
+    write_arm_fixture "$dir" actionable
+    case "$row" in
+      help) payload= ;;
+      empty) payload= ;;
+      malformed) payload='{"hook_event_name":"Stop"' ;;
+      no-event) payload='{"session_id":"sess-autoarm","stop_hook_active":false}' ;;
+      subagent-stop) payload='{"session_id":"sess-autoarm","hook_event_name":"SubagentStop"}' ;;
+    esac
+    if [ "$row" = help ]; then
+      out=$(FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+          printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+          "$FM_HOME/bin/fm-claude-stop-autoarm.sh" --help </dev/null
+        ' 2>&1); status=$?
+    else
+      out=$(printf '%s' "$payload" | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
+          printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+          "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+        ' 2>&1); status=$?
+    fi
+    expect_code 0 "$status" "a $row invocation must exit 0 without rewaking"
+    assert_contains "$out" "Usage: fm-claude-stop-autoarm.sh" "a $row invocation must print usage"
+    [ ! -e "$dir/state/arm-ran" ] || fail "a $row invocation armed the watcher"
+    [ ! -e "$dir/state/.claude-autoarm-epoch" ] || fail "a $row invocation wrote an auto-arm epoch"
+  done
+  pass "auto-arm: refuses to arm without a Claude Stop payload and prints usage"
+}
+
+test_payload_gate_without_jq() {
+  # A home without jq must keep Stop-owned continuity, and still refuse input
+  # that is not a Stop payload.
+  local nojq bindir tool row dir out status payload
+  nojq="$TMP_ROOT/nojq-bin"
+  mkdir -p "$nojq"
+  for bindir in /usr/local/bin /usr/bin /bin /usr/sbin /sbin; do
+    [ -d "$bindir" ] || continue
+    for tool in "$bindir"/*; do
+      [ -x "$tool" ] || continue
+      [ "$(basename "$tool")" = jq ] && continue
+      [ -e "$nojq/$(basename "$tool")" ] || ln -s "$tool" "$nojq/$(basename "$tool")"
+    done
+  done
+  ln -sf "$FAKE_CLAUDE" "$nojq/claude"
+  PATH="$nojq" command -v jq >/dev/null 2>&1 && fail "fixture PATH still exposes jq"
+  for row in stop subagent-stop no-event; do
+    dir=$(make_primary_dir "$TMP_ROOT/nojq-$row")
+    : > "$dir/state/task.meta"
+    write_arm_fixture "$dir" actionable
+    case "$row" in
+      stop) payload='{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false}' ;;
+      subagent-stop) payload='{"session_id":"s","hook_event_name":"SubagentStop"}' ;;
+      no-event) payload='{"session_id":"s"}' ;;
+    esac
+    out=$(printf '%s\n' "$payload" | PATH="$nojq" FM_HOME="$dir" "$nojq/claude" -c '
+        printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' 2>&1); status=$?
+    if [ "$row" = stop ]; then
+      expect_code 2 "$status" "a Stop payload without jq must still arm and rewake"
+      [ -e "$dir/state/arm-ran" ] || fail "a Stop payload without jq did not arm"
+    else
+      expect_code 0 "$status" "a $row payload without jq must exit 0"
+      [ ! -e "$dir/state/arm-ran" ] || fail "a $row payload without jq armed the watcher"
+      assert_contains "$out" "Usage: fm-claude-stop-autoarm.sh" "a $row payload without jq must print usage"
+    fi
+  done
+  pass "auto-arm: payload gate works without jq"
+}
+
+test_term_mid_arm_leaves_no_output_file() {
+  # Claude ends a hook's process group with one TERM on hook timeout or session
+  # end. The hook's in-flight arm output must not leak into state/.
+  local dir i gpid
+  dir=$(make_primary_dir "$TMP_ROOT/term-mid-arm")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" hang
+  printf '%s\n' '{"session_id":"sess-autoarm","hook_event_name":"Stop","stop_hook_active":false}' \
+    | FM_HOME="$dir" perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die' "$FAKE_CLAUDE" -c '
+        printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+        "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      ' >/dev/null 2>&1 &
+  gpid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/state/arm-ran" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$dir/state/arm-ran" ] || fail "hook never reached the foreground arm"
+  ls "$dir/state"/.claude-autoarm-output.* >/dev/null 2>&1 || fail "hook did not create its arm output before the TERM"
+  kill -TERM -- "-$gpid" 2>/dev/null || fail "could not TERM the hook process group"
+  wait "$gpid" 2>/dev/null || true
+  # The group TERM reaches the fake harness and the hook together, so the
+  # hook's EXIT cleanup can still be running after the harness is reaped.
+  i=0
+  while [ "$i" -lt 60 ] && { ls "$dir/state"/.claude-autoarm-output.* >/dev/null 2>&1 \
+    || [ -e "$dir/state/.claude-autoarm.lock" ]; }; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  ! ls "$dir/state"/.claude-autoarm-output.* >/dev/null 2>&1 \
+    || fail "a group TERM leaked the hook's arm output: $(ls "$dir/state"/.claude-autoarm-output.*)"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "a group TERM left the auto-arm owner lock behind"
+  pass "auto-arm: a group TERM mid-arm removes the arm output and owner lock"
+}
+
 test_fm_lock_status_still_works_with_shared_lib() {
   local out
   out=$(FM_HOME="$TMP_ROOT/lock-status-home" bash "$ROOT/bin/fm-lock.sh" status 2>&1)
@@ -596,4 +716,7 @@ test_single_flight_admits_exactly_one_owner
 test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
+test_refuses_to_arm_without_a_stop_payload
+test_payload_gate_without_jq
+test_term_mid_arm_leaves_no_output_file
 test_fm_lock_status_still_works_with_shared_lib

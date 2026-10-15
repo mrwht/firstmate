@@ -265,7 +265,8 @@ if [ "${FM_FIXTURE_ORPHAN_HERE:-0}" = 1 ]; then
 fi
 printf '%s\n' "$$" > "$FM_HOME/state/session-pid"
 printf '%s\n' "$$" > "$FM_HOME/state/.lock"
-"$FM_HOME/bin/fm-claude-stop-autoarm.sh" </dev/null > "$FM_HOME/state/hook.out" 2>&1
+printf '%s\n' '{"session_id":"sess-ancestry","hook_event_name":"Stop","stop_hook_active":false}' \
+  | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/state/hook.out" 2>&1
 printf '%s\n' "$?" > "$FM_HOME/state/hook.rc"
 SH
   cat > "$dir/daemon.sh" <<'SH'

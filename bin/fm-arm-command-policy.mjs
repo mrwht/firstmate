@@ -26,6 +26,7 @@ const REASONS = {
   "broad-watcher-kill": "a broad process kill targeting the firstmate watcher is forbidden",
   "unclassifiable-protected-command": "unsupported or malformed shell syntax contains a protected watcher command",
   "watcher-direct": "bin/fm-watch.sh must not be run directly; arm the watcher with bin/fm-watch-arm.sh or run bin/fm-watch-checkpoint.sh instead",
+  "hook-direct": "bin/fm-claude-stop-autoarm.sh is a Claude hook and must not be run by hand; it arms the watcher automatically when a turn ends",
 };
 
 function parseArguments(argv) {
@@ -44,7 +45,7 @@ function parseArguments(argv) {
 }
 
 function rawMentionsProtected(command) {
-  return /(?:^|[/\s'"`(])fm-watch(?:-(?:arm|checkpoint))?\.sh\b/.test(normalizeLineContinuations(command));
+  return /(?:^|[/\s'"`(])fm-(?:watch(?:-(?:arm|checkpoint))?|claude-stop-autoarm)\.sh\b/.test(normalizeLineContinuations(command));
 }
 
 function rawMentionsBroadKill(command) {
@@ -599,6 +600,7 @@ const PROTECTED_SCRIPTS = [
   { relative: "bin/fm-watch-arm.sh", kind: "arm" },
   { relative: "bin/fm-watch-checkpoint.sh", kind: "checkpoint" },
   { relative: "bin/fm-watch.sh", kind: "watch" },
+  { relative: "bin/fm-claude-stop-autoarm.sh", kind: "hook" },
 ];
 
 function protectedIdentity(value, root) {
@@ -611,7 +613,7 @@ function protectedIdentity(value, root) {
 
 function hasUnclassifiableProtectedExpansion(word, root) {
   if (!word?.unquotedExpansion || protectedIdentity(word.value, root)) return false;
-  return /(?:^|\/)fm-watch/.test(word.value);
+  return /(?:^|\/)fm-(?:watch|claude-stop-autoarm)/.test(word.value);
 }
 
 function shellInvocation(position) {
@@ -876,7 +878,7 @@ function setupKind(info, context) {
 }
 
 function finalProtectedAllowed(info) {
-  if (!info.protectedKind || info.protectedKind === "watch" || info.redirection || info.substitution) return false;
+  if (!info.protectedKind || info.protectedKind === "watch" || info.protectedKind === "hook" || info.redirection || info.substitution) return false;
   if (!ordinaryWordsOnly(info.tokens) || info.position.prefixAssignments > 0) return false;
   const wrappers = info.position.wrappers;
   return wrappers.length === 0 || (wrappers.length === 1 && wrappers[0] === "exec");
@@ -905,6 +907,7 @@ function decision(command, root, home) {
   if (analysis.broadKill) return deny("broad-watcher-kill");
   if (analysis.error && analysis.protectedFound) return deny("unclassifiable-protected-command");
   if (!analysis.protectedFound) return { decision: "allow" };
+  if (analysis.nodeInfos?.some((info) => info.protectedKind === "hook")) return deny("hook-direct");
   if (analysis.nodeInfos?.some((info) => info.protectedKind === "watch")) return deny("watcher-direct");
   if (analysis.nestedProtected) return deny("watcher-nested");
 
