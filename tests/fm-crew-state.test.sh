@@ -33,6 +33,10 @@
 #       mistaken for a reassignment. Regression coverage for the live
 #       fm-livepush-sse-endpoint / fm-api-server-durable-restart misattribution
 #       (data/fm-crew-state-run-step-stale-terminal/report.md).
+#   (m) superseded runs: a newer active run whose head exists only in the
+#       pipeline's copy is bound through no-mistakes' branch_sync and outranks
+#       an older cancelled run at the worktree HEAD; the coarse runs list never
+#       falls through from the branch's newest row to an older one.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1300,6 +1304,121 @@ test_local_advanced_past_run_head_invalidates() {
   pass "local work advanced past run head invalidates attribution"
 }
 
+# A replacement run on the same branch after an earlier run was cancelled, shaped
+# like the real v1.84 `axi status` output: once a gate fix lands, the run head
+# exists only in the pipeline's gate copy, so the local worktree cannot resolve
+# it, while branch_sync reports the pipeline owns this branch at the local head.
+run_replacement_pipeline_owned() {  # <branch> <run-head> <local-head> [sync-state] [sync-run]
+  cat <<EOF
+run:
+  id: "01NEWRUN"
+  branch: $1
+  status: running
+  head: ${2:0:8}
+  head_sha: $2
+  verification_plan: none
+  findings: 1 awaiting
+  steps[4]{step,status,findings,duration_ms}:
+    intent,completed,0,7
+    rebase,completed,0,791
+    review,completed,1,361695
+    test,running,0,0
+branch_sync:
+  state: ${4:-pipeline_owned}
+  changed: false
+  local:
+    branch: $1
+    head: $3
+    clean: true
+  pipeline:
+    run: "${5:-01NEWRUN}"
+    status: running
+EOF
+}
+
+# The 2026-10-15 incident: an older cancelled run's head equals the worktree
+# HEAD, while the newer active run's head lives only in the pipeline's copy.
+# The newer run is the branch's current run; the superseded cancelled run must
+# never outrank it.
+UNKNOWN_RUN_HEAD=a973c6af752f9fd5697fe6b16d577bc06b70565d
+
+test_newer_active_run_outranks_superseded_cancelled_run() {
+  reset_fakes
+  local d local_head short out
+  d=$(new_case superseded-cancelled)
+  make_repo_on_branch "$d/wt" fm/feat-replaced
+  local_head=$(git -C "$d/wt" rev-parse HEAD)
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/replaced.meta" "window=fm:fm-replaced" "worktree=$d/wt" "kind=ship" "harness=claude"
+  FM_FAKE_AXI_STATUS="$(run_replacement_pipeline_owned fm/feat-replaced "$UNKNOWN_RUN_HEAD" "$local_head")"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running      fm/feat-replaced ${UNKNOWN_RUN_HEAD:0:8}  2026-10-15 14:03
+  cancelled    fm/feat-replaced ${short}  2026-10-12 12:45
+EOF
+)"
+  out=$(run_crew_state "$d" replaced)
+  assert_contains "$out" "state: working" "newer active run -> working"
+  assert_contains "$out" "source: run-step" "newer active run -> run-step source"
+  assert_contains "$out" "validating (running)" "newer active run reports its own step"
+  assert_not_contains "$out" "cancelled" "superseded cancelled run must not be reported"
+  pass "newer active run outranks a superseded cancelled run"
+}
+
+# The coarse runs list is newest-first: the newest row for this branch IS the
+# branch's current run. When that row cannot be bound to this worktree, older
+# same-branch rows are superseded and must not be attributed in its place.
+test_coarse_newest_branch_row_supersedes_older_rows() {
+  reset_fakes
+  local d short out
+  d=$(new_case coarse-superseded)
+  make_repo_on_branch "$d/wt" fm/feat-coarsesup
+  short=$(git -C "$d/wt" rev-parse --short=8 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/coarsesup.meta" "window=fm:fm-coarsesup" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: replacement run started\n' > "$d/state/coarsesup.status"
+  # No branch_sync binding available: the full status cannot attribute.
+  FM_FAKE_AXI_STATUS="$(run_replacement_pipeline_owned fm/feat-coarsesup "$UNKNOWN_RUN_HEAD" "$UNKNOWN_RUN_HEAD")"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running      fm/feat-coarsesup ${UNKNOWN_RUN_HEAD:0:8}  2026-10-15 14:03
+  cancelled    fm/feat-coarsesup ${short}  2026-10-12 12:45
+EOF
+)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" coarsesup
+  out=$(run_crew_state "$d" coarsesup)
+  assert_not_contains "$out" "state: failed" "superseded cancelled row must not become the verdict"
+  assert_not_contains "$out" "cancelled" "superseded cancelled row must not be reported"
+  assert_not_contains "$out" "source: run-step" "an unbindable newest row leaves no run attributed"
+  assert_contains "$out" "source: status-log" "falls back to current-state sources"
+  pass "coarse newest branch row supersedes older same-branch rows"
+}
+
+# no-mistakes' branch_sync binds a run only when it names THIS run, reports the
+# pipeline owning the branch, and records this worktree's exact local head.
+test_branch_sync_binding_requires_exact_match() {
+  reset_fakes
+  local d local_head out label sync state_word run_word head_word
+  d=$(new_case branch-sync-mismatch)
+  make_repo_on_branch "$d/wt" fm/feat-syncmis
+  local_head=$(git -C "$d/wt" rev-parse HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/syncmis.meta" "window=fm:fm-syncmis" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: still implementing\n' > "$d/state/syncmis.status"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" syncmis
+  for sync in "other-run|pipeline_owned|01OTHERRUN|$local_head" \
+    "user-owned|user_owned|01NEWRUN|$local_head" \
+    "other-local-head|pipeline_owned|01NEWRUN|$UNKNOWN_RUN_HEAD"; do
+    IFS='|' read -r label state_word run_word head_word <<< "$sync"
+    FM_FAKE_AXI_STATUS="$(run_replacement_pipeline_owned fm/feat-syncmis "$UNKNOWN_RUN_HEAD" "$head_word" "$state_word" "$run_word")"
+    out=$(run_crew_state "$d" syncmis)
+    assert_not_contains "$out" "source: run-step" "branch_sync $label must not bind the run"
+    assert_contains "$out" "source: status-log" "branch_sync $label falls back to current-state sources"
+  done
+  pass "branch_sync binding requires run, ownership, and local head to match"
+}
+
 test_missing_run_head_falls_back_to_current_state() {
   reset_fakes
   local d out
@@ -1424,6 +1543,9 @@ test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
 test_missing_run_head_falls_back_to_current_state
+test_newer_active_run_outranks_superseded_cancelled_run
+test_coarse_newest_branch_row_supersedes_older_rows
+test_branch_sync_binding_requires_exact_match
 test_worktree_reassigned_reports_unknown
 test_branch_match_no_false_positive
 test_detached_worktree_not_treated_as_reassigned
