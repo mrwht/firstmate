@@ -141,6 +141,13 @@ matrix_case E15 allow '$FM_HOME/bin/fm-watch-arm.sh'
 matrix_case E16 allow '~/firstmate/bin/fm-watch-checkpoint.sh --seconds 180'
 matrix_case E17 allow 'for f in 1; do echo fm-watch; done'
 
+# The Stop auto-arm hook is a Claude hook, never a model-run command.
+matrix_case H01 deny "$ROOT/bin/fm-claude-stop-autoarm.sh --help 2>&1 | head -60"
+matrix_case H02 deny 'bin/fm-claude-stop-autoarm.sh'
+matrix_case H03 deny 'bash bin/fm-claude-stop-autoarm.sh'
+matrix_case H04 allow 'shellcheck bin/fm-claude-stop-autoarm.sh'
+matrix_case H05 allow "rg -n 'fm-claude-stop-autoarm.sh --help' docs"
+
 MATRIX_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-arm-policy-matrix.XXXXXX")
 FM_TEST_CLEANUP_DIRS+=("$MATRIX_TMP")
 trap fm_test_cleanup EXIT
@@ -183,7 +190,7 @@ run_matrix_entry() {
   fi
 
   [ "$rc" -eq 2 ] || fail "$id via $entry must deny, got exit $rc"
-  jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.systemMessage | test("\\[(watcher-(background|pipeline|redirection|bundled|nested|direct)|broad-watcher-kill|unclassifiable-protected-command)\\]"))' "$err_file" >/dev/null 2>&1 \
+  jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.systemMessage | test("\\[(watcher-(background|pipeline|redirection|bundled|nested|direct)|hook-direct|broad-watcher-kill|unclassifiable-protected-command)\\]"))' "$err_file" >/dev/null 2>&1 \
     || fail "$id via $entry deny must carry a stable reason code on stderr: $(cat "$err_file")"
   if [ "$entry" = claude ]; then
     [ ! -s "$out_file" ] || fail "$id via claude deny must leave stdout empty: $(cat "$out_file")"
@@ -233,6 +240,9 @@ test_direct_policy_contract() {
   assert_policy direct-watch-not-blessed $'deny\twatcher-direct' 'bin/fm-watch.sh'
   assert_policy direct-watch-expanded $'deny\twatcher-direct' '$FM_HOME/bin/fm-watch.sh'
   assert_policy direct-watch-safe-shape $'deny\twatcher-direct' 'cd /tmp; bin/fm-watch.sh'
+  assert_policy direct-hook-help $'deny\thook-direct' '/Users/x/firstmate/bin/fm-claude-stop-autoarm.sh --help 2>&1 | head -60'
+  assert_policy direct-hook-expanded $'deny\thook-direct' '$FM_HOME/bin/fm-claude-stop-autoarm.sh'
+  assert_policy direct-hook-safe-shape $'deny\thook-direct' 'cd /tmp; exec bin/fm-claude-stop-autoarm.sh'
   heredoc_data=$'cat <<\'EOF\'\nbin/fm-watch-arm.sh &\nEOF'
   heredoc_watcher=$'bin/fm-watch-arm.sh <<\'EOF\'\ndata only\nEOF'
   assert_policy direct-heredoc-data allow "$heredoc_data"

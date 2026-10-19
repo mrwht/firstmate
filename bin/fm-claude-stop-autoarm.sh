@@ -7,6 +7,10 @@
 # deduplication across firings. It owns routine tokenless watcher continuity
 # for the Claude primary:
 #
+#   - Payload: only a Claude hook payload on stdin whose hook_event_name is an
+#     event this hook serves (Stop). A hand-run, --help, or any other input
+#     prints usage and exits 0 without arming; extend the event case below to
+#     serve another hook event.
 #   - Scope: only a genuine primary checkout (plain checkout) with AGENTS.md,
 #     bin/, and the effective state dir - the exact fm-turnend-guard.sh scope.
 #     Child crew/scout worktrees stay inert.
@@ -79,9 +83,46 @@ esac
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
-# Consume the Stop payload once. The decisions below are state-based; the
-# payload is read so a slow writer can never wedge on a full pipe.
-cat >/dev/null 2>&1 || true
+usage() {
+  cat <<'EOF'
+Usage: fm-claude-stop-autoarm.sh < <Claude hook JSON payload>
+
+Claude Code runs this as the primary session's Stop asyncRewake hook
+(.claude/settings.json); it is not a manual command. It arms the watcher only
+when stdin carries a Claude hook payload for an event it serves
+(hook_event_name "Stop"). Run by hand, with --help, or with any other input,
+it prints this usage and exits without arming.
+EOF
+}
+
+case "${1:-}" in
+  '') ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 0 ;;
+esac
+
+# Refuse anything but a real Claude hook payload for an event this hook serves,
+# so a hand-run or stray invocation never arms (or later rewakes) a session.
+# Read the payload once and in full, so a slow writer can never wedge on a full
+# pipe. An interactive stdin is a hand-run, never a hook, so do not block on it.
+# jq parses the payload strictly; a home without jq falls back to reading the
+# top-level key directly rather than losing Stop-owned continuity.
+if [ -t 0 ]; then
+  usage >&2
+  exit 0
+fi
+PAYLOAD=$(cat 2>/dev/null || true)
+if command -v jq >/dev/null 2>&1; then
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" \
+    | jq -r 'if type == "object" then (.hook_event_name // "") else "" end' 2>/dev/null || true)
+else
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | tr -d '\n' \
+    | sed -n 's/^[[:space:]]*{.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*}[[:space:]]*$/\1/p')
+fi
+case "$HOOK_EVENT" in
+  Stop) ;;
+  *) usage >&2; exit 0 ;;
+esac
 
 # --- scope: genuine primary checkout only -----------------------------------
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
@@ -129,7 +170,10 @@ if ! fm_lock_set_role "$OWNER_LOCK" autoarm; then
   fm_lock_release "$OWNER_LOCK"
   exit 0
 fi
-trap 'fm_lock_release "$OWNER_LOCK"' EXIT
+# The EXIT trap also runs when Claude's group TERM ends this hook mid-arm, so it
+# owns removing the in-flight arm output; explicit exit paths remove it earlier.
+OUT=
+trap '[ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null; fm_lock_release "$OWNER_LOCK"' EXIT
 
 write_epoch() {  # <outcome>
   local outcome=$1 seq tmp
@@ -159,7 +203,6 @@ write_epoch arming
 # Every non-actionable close is checked against the same identity-matched live
 # watcher and fresh-beacon predicate used by the turn-end guard before it is
 # retried or translated into an operator-visible failure.
-OUT=
 ACTIONABLE=0
 HEALTHY=0
 attempt=0

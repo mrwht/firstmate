@@ -774,6 +774,101 @@ test_arm_hup_cleans_child_and_temp_output() {
   pass "arm cleans child watcher and temp output on HUP"
 }
 
+test_group_term_then_watcher_term_still_releases_lock() {
+  # A harness that owns the hook's process group ends it with one group TERM,
+  # and the arm's own handler then re-signals the already-dying watcher about
+  # 2ms later. That second TERM must not abort the watcher's EXIT cleanup: the
+  # lock must still be released and the downtime marker published.
+  local trial dir state fakebin armout i armpid wpid token
+  for trial in 1 2 3; do
+    dir=$(make_case "group-term-cleanup-$trial")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    armout="$dir/arm.out"
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+      perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die' "$WATCH_ARM" > "$armout" 2>&1 &
+    armpid=$!
+    i=0
+    while [ "$i" -lt 80 ]; do
+      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    grep -qF 'watcher: started pid=' "$armout" || fail "arm (trial $trial) did not start a watcher: $(cat "$armout")"
+    wpid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ -n "$wpid" ] || fail "arm (trial $trial) left no watcher pid in the lock"
+    perl -MTime::HiRes=usleep -e 'kill "TERM", -$ARGV[0]; usleep(2000); kill "TERM", $ARGV[1];' "$armpid" "$wpid"
+    wait_for_exit "$armpid" 80 || true
+    i=0
+    while [ "$i" -lt 80 ] && is_live_non_zombie "$wpid"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+    ! is_live_non_zombie "$wpid" || fail "group TERM (trial $trial) left the watcher running"
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" != "$wpid" ] \
+      || fail "group TERM then watcher TERM (trial $trial) left .watch.lock on dead watcher pid $wpid"
+    token=$(FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_recovery_marker_read "$2" || exit 1
+      printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+    ' _ "$LIB" "$state/.watcher-down") || token=
+    case "$token" in
+      pending:downtime:*) ;;
+      *) fail "group TERM then watcher TERM (trial $trial) did not publish downtime ('$token')" ;;
+    esac
+  done
+  pass "group TERM followed by a watcher re-signal still releases the lock and publishes downtime"
+}
+
+test_arm_reclaims_watch_lock_left_on_reused_pid() {
+  # A watcher whose cleanup never ran leaves its lock behind; when the kernel
+  # later hands that pid to an unrelated process, a plain arm must notice the
+  # recorded identity no longer matches and start a fresh watcher, without ever
+  # signaling the unrelated process.
+  local dir state fakebin armout i armpid stranger lock_pid token
+  dir=$(make_case arm-reused-pid-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark_pr_check_migration_complete "$state"
+  sleep 300 &
+  stranger=$!
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$stranger" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "identity of the long-gone watcher" > "$state/.watch.lock/pid-identity"
+  touch -t 200001010000 "$state/.last-watcher-beat"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" 2>&1 &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ] && is_live_non_zombie "$armpid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ -z "$lock_pid" ] || [ "$lock_pid" = "$stranger" ] || kill "$lock_pid" 2>/dev/null || true
+  is_live_non_zombie "$stranger" || fail "arm signaled the unrelated process holding the reused pid"
+  kill "$stranger" 2>/dev/null || true
+  wait "$stranger" 2>/dev/null || true
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "arm failed behind a reused-pid watcher lock: $(cat "$armout")"
+  grep -qF 'check: rearm-resurface' "$armout" \
+    || fail "arm did not resurface downtime after reclaiming a reused-pid lock: $(cat "$armout")"
+  [ "$lock_pid" != "$stranger" ] || fail "reused-pid watcher lock was not reclaimed"
+  token=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_recovery_marker_read "$2" || exit 1
+    printf "%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$LIB" "$state/.watcher-down") || token=
+  case "$token" in
+    pending:*) ;;
+    *) fail "reused-pid reclaim left no durable recovery evidence ('$token')" ;;
+  esac
+  pass "arm reclaims a watcher lock left on a reused pid without signaling it"
+}
+
 test_arm_propagates_immediate_wake_before_confirmation() {
   local dir state fakebin armout drain_out check_file rc
   dir=$(make_case arm-immediate-wake)
@@ -1174,6 +1269,8 @@ test_redundant_arm_exits_promptly_instead_of_leaking
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
+test_group_term_then_watcher_term_still_releases_lock
+test_arm_reclaims_watch_lock_left_on_reused_pid
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
