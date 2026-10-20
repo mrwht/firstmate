@@ -139,7 +139,7 @@ Both recorded runtime identities now classify the exact `pi-launcher` foreground
 Backend applicability was reviewed across every spawn adapter.
 Tmux needs the exact `pi-launcher`, `pi-signed`, `pi`, and `Pi` process identities for recovery-grade liveness.
 Herdr uses native registered-agent state and needs no process-name branch.
-Zellij has no verified recovery-grade agent process probe, while Orca and cmux do not support secondmate spawns, so those three retain their existing generic ordinary-launch semantics without a new liveness matcher.
+Zellij has no verified recovery-grade agent process probe, and Orca and cmux keep their generic ordinary-launch semantics, so those three retain them without a new liveness matcher.
 
 The current classifier matrix and its refresh guard are recorded in [Composer classification matrix](#composer-classification-matrix), with portable shape coverage in `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
 Kimi pointer delivery and OpenCode 1.18.4 busy-queue behavior remain pinned by `tests/fm-kimi-harness.test.sh` and `tests/fm-tmux-submit-busy.test.sh`.
@@ -312,24 +312,13 @@ ok - real herdr E2E: the duplicate-labeled sibling workspace is left entirely un
 ok - real herdr E2E: with a duplicated home label, a projected worker still hangs off the launcher's exact workspace and the sibling stays untouched
 ok - real herdr E2E: an ambiguous home label with no launcher identity refuses before any worker endpoint exists
 ok - real herdr E2E: a launcher pane that no longer exists refuses before any worker endpoint exists
-ok - real herdr E2E: a secondmate launching its own worker gets the same exact-workspace guarantee, and its same-labeled sibling is untouched
-ok - real herdr E2E: a --secondmate launch still stands up that secondmate's own workspace instead of inheriting the launcher's
 ok - real herdr E2E: teardown closes only the worker's own pane and leaves the launcher, its workspace, and the same-labeled sibling intact
 ```
 
 That suite's headline case runs `bin/fm-spawn.sh` inside a real Herdr pane, so the parent identity comes from Herdr's own injection rather than a composed environment.
 Cross-session and contradictory bindings are covered deterministically in `tests/fm-backend-herdr.test.sh`, which can script a second server's socket without provisioning one.
 
-### Per-home and presentation topology
-
-Per-home behavior is owned by:
-
-```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
-  tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
-```
-
-Observed guarantee: the primary and secondmate used distinct home workspaces, a child launched by the secondmate stayed in that secondmate workspace, list-live remained home-scoped, and exact cleanup did not affect sibling homes.
+### Presentation topology
 
 The complete projection suite ran on 2026-07-21 against Herdr 0.7.4 protocol 16:
 
@@ -341,11 +330,6 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 Observed guarantees included:
 
 ```text
-ok - real Herdr lab: primary and two secondmate homes each own a top-level contiguous child block
-ok - real Herdr lab: concurrent primary/A/B spawns stay session-locked with zero focus drift
-ok - real Herdr lab: session lock contention from a secondmate home falls back flat with no journal
-ok - real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated
-ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority
 ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session tripwire intact
 ```
 
@@ -362,8 +346,6 @@ Observed restart-reclaim guarantees:
 
 ```text
 ok - real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence
-ok - real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent
-ok - real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift
 ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch
 ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact
 ```
@@ -380,7 +362,6 @@ Observed default and opt-out guarantees:
 ```text
 ok - real Herdr lab: an opted-out spawn retains the Stage 1 Herdr command sequence with zero ordering calls
 ok - real Herdr lab: a home that configured nothing is projected by default
-ok - real Herdr lab: the primary presentation setting inherits into real secondmate homes
 ok - real Herdr lab validation completed on Herdr 0.8.0 with the default-session tripwire intact
 ```
 
@@ -507,16 +488,6 @@ tests/fm-backend-herdr.test.sh
 Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; and every presence-gate mode accepted only a structured not-found as gone.
 
 The same fixtures verified three further boundaries on 2026-07-29: missing or malformed endpoint identity and an unparseable pane presence refused record removal with everything retained; the SIGKILL escalation re-read the exact pane's process information and refused to signal when a different shell pid owned the pane, falling back to the plain close with the original process untouched; and a reposition whose removal then failed on every path restored the exact original workspace order through a second verified move and reported the close as failed.
-
-The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed.
-
-Observed output:
-
-```text
-ok - forced secondmate teardown preflights every Herdr child before cleanup mutation
-ok - forced secondmate teardown retains Herdr child identity until exact pane disappearance
-ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
-```
 
 ### Composer and operational input
 
@@ -730,7 +701,7 @@ App-server partial methods and raw socket experiments do not satisfy that bridge
 
 ## Cursor Agent CLI
 
-Cursor is a crewmate/scout adapter only; a `--secondmate` launch is refused.
+Cursor is a crewmate/scout adapter only.
 The evidence below was produced on 2026-08-11 against the installed signed CLI on macOS 26.5.2 arm64 with tmux 3.6a, running as `kunchenguid`.
 
 - Binary: `~/.local/bin/cursor-agent`, canonicalizing into `~/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent`.

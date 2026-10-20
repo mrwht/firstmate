@@ -30,8 +30,7 @@
     "docs/herdr-backend.md",
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
-    "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/cmux-backend.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -173,10 +172,6 @@
       "audience": "agent-runtime"
     },
     {
-      "path": ".agents/skills/secondmate-provisioning/SKILL.md",
-      "audience": "agent-runtime"
-    },
-    {
       "path": ".agents/skills/stow/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -282,10 +277,6 @@
     },
     {
       "path": "docs/orca-backend.md",
-      "audience": "operator-current"
-    },
-    {
-      "path": "docs/remote-secondmates.md",
       "audience": "operator-current"
     },
     {

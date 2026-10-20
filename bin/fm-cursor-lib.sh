@@ -146,7 +146,7 @@ fm_cursor_catalog_has_model() {  # <model>
 # Print the stable absolute launcher path for the Cursor executable, or return 1
 # with a diagnostic on stderr.
 #
-# Resolution order, shared by bin/fm-spawn.sh and bin/fm-remote-doctor.sh:
+# Resolution order, used by bin/fm-spawn.sh:
 # cursor-agent on PATH, `agent` on PATH, then the ~/.local/bin installs of
 # both. cursor-agent is preferred over the alias at every stage. The
 # ~/.local/bin fallbacks exist because Cursor's user-local install is routinely

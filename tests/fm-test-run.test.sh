@@ -99,7 +99,6 @@ init_changed_fixture_repo() {
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
     fm-backend-herdr-smoke.test.sh \
-    fm-secondmate-safety.test.sh \
     fm-session-start.test.sh \
     fm-afk-pi-herdr-return-e2e.test.sh \
     fm-backend.test.sh \
@@ -118,6 +117,7 @@ init_changed_fixture_repo() {
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   : >"$repo/tests/retired-fixture.sh"
+  : >"$repo/tests/retired-helpers.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
@@ -141,7 +141,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/tests/lib.sh"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-pr-merge.test.sh" "shared helper selects pr-forge dependents"
-  assert_contains "$listed" "tests/fm-secondmate-safety.test.sh" "shared helper selects secondmate dependents"
+  assert_contains "$listed" "tests/fm-session-start.test.sh" "shared helper selects session-bootstrap dependents"
   assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" "shared helper selects snapshot dependents"
   git -C "$repo" add tests/lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm helper-change
@@ -171,9 +171,9 @@ test_changed_dependency_selection_and_unmapped_failure() {
   git -C "$repo" add .agents .claude .pi
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm non-bin-source-change
 
-  git -C "$repo" rm -q tests/retired-fixture.sh
+  git -C "$repo" rm -q tests/retired-fixture.sh tests/retired-helpers.sh
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) \
-    || fail "a deleted test support file must not fail changed selection"
+    || fail "a deleted test support file or shared helper must not fail changed selection"
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm retire-fixture
   (cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD~1) >/dev/null \
     || fail "a committed test support file deletion must not fail changed selection"

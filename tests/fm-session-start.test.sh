@@ -1077,7 +1077,7 @@ SH
   pass "session start: a read-only session declares its skipped network checks rather than dropping them"
 }
 
-# The compatibility verdict costs three tasks-axi subprocesses and one session
+# The compatibility verdict costs two tasks-axi subprocesses and one session
 # start needs it twice. The digest must pay for it once.
 test_tasks_axi_compatibility_is_probed_once() {
   local rec root home fakebin log probes

@@ -67,11 +67,10 @@ fm_backend_source herdr || fail "fm_backend_source herdr failed"
 fm_backend_herdr_version_check || fail "version_check failed against the real installed herdr"
 
 # --- 1. spawn two real task tabs (crewmate-shaped and secondmate-shaped) ----
-# fm_backend_herdr_create_task is the ONE function both bin/fm-spawn.sh's
-# ordinary crewmate/scout path and its --secondmate path call, so exercising
-# it directly here covers both paths identically - already proven distinct
-# only in FM_HOME-shadowing (tests/fm-backend-herdr-workspace-per-home-e2e.test.sh),
-# never in this duplicate-guard logic, which has no home-specific branching.
+# fm_backend_herdr_create_task is the ONE function bin/fm-spawn.sh's
+# crewmate/scout path calls, so exercising it directly here covers that path.
+# The second, "secondmate-shaped" tab is just a second independent task tab
+# for the duplicate guard, which has no home-specific branching.
 
 PROJ_CWD="$SCRATCH/proj"
 mkdir -p "$PROJ_CWD"

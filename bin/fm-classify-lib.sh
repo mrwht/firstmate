@@ -272,9 +272,8 @@ EOF
 # Reserved decision-key namespaces, and the rule that makes them mean something.
 #
 # A key like `pending-reply-<id>` names a decision that one library raises and is
-# the only thing that ever closes it. Every writer reaches this same stream: a
-# local mate appends straight into it, and a remote mate's lines are mirrored
-# into it verbatim. So without a rule here, any writer could claim a reserved
+# the only thing that ever closes it. Every writer reaches this same stream, so
+# without a rule here, any writer could claim a reserved
 # key with an unrelated note, take the key over in this fold, and permanently
 # block the owner's close - leaving a decision nothing will ever resolve - or
 # clear the owner's decision with a bare resolution.
@@ -284,9 +283,9 @@ EOF
 # note speaks that namespace's own vocabulary, which its owner states by
 # beginning the note with a `<namespace>...:` token. A line failing that is not a
 # decision transition at all here and is folded as ordinary status. This is a
-# consumer-side rule on purpose - it protects local and remote writers
-# identically, and it can never fail a whole delta or wedge a stream the way a
-# writer-side rejection would.
+# consumer-side rule on purpose - it protects every writer identically, and it
+# can never fail a whole delta or wedge a stream the way a writer-side rejection
+# would.
 FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
 
 # 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.

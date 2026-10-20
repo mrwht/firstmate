@@ -10,7 +10,7 @@
 # are table-driven over the inputs that vary: whether `treehouse get --help`
 # advertises --lease, which (if any) tasks-axi version is on PATH, whether
 # tasks-axi update advertises --archive-body, whether its mv help advertises
-# multi-ID moves, whether quota-axi is on PATH,
+# multi-ID moves (no longer required), whether quota-axi is on PATH,
 # whether the local backend config opts out of tasks-axi backlog mutations,
 # which no-mistakes version is on PATH, which gh-axi version is on PATH, and
 # which lavish-axi version is on PATH.
@@ -303,7 +303,7 @@ compatible tasks-axi is silent by default^1^0.2.4^1^-^empty^^
 missing tasks-axi is required by default^1^-^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 incompatible tasks-axi is required by default^1^0.1.0^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 tasks-axi without archive-body is required by default^1^0.2.4:noarchive^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
-tasks-axi without multi-id mv is required by default^1^0.2.4:nomulti^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
+tasks-axi without multi-id mv is accepted silently^1^0.2.4:nomulti^1^-^empty^^
 missing quota-axi is required by default^1^0.2.4^0^manual^exact^MISSING: quota-axi (install: npm install -g quota-axi)^
 manual backlog backend still requires missing tasks-axi^1^-^1^manual^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 manual backlog backend suppresses tasks-axi availability^1^0.2.4^1^manual^empty^^
@@ -446,7 +446,7 @@ older tasks-axi with features reports an upgrade^0.1.1^missing
 the patch just below the floor reports an upgrade^0.2.3^missing
 unparseable tasks-axi version reports an upgrade^tasks-axi development build^missing
 tasks-axi at floor without archive-body reports an upgrade^0.2.4:noarchive^missing
-tasks-axi at floor without multi-id reports an upgrade^0.2.4:nomulti^missing
+tasks-axi at floor without multi-id is accepted^0.2.4:nomulti^empty
 ROWS
   pass "bootstrap enforces tasks-axi minimum version"
 }

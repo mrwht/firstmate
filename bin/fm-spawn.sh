@@ -1118,10 +1118,9 @@ real_path_or_raw() {  # <path>
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
-# a herdr spawn goes through the version-gated, workspace-per-HOME,
+# a herdr spawn goes through the version-gated, workspace-per-home,
 # tab-per-task sequence in bin/backends/herdr.sh instead (D4/D5 as refined by
-# docs/herdr-backend.md's "workspace-per-home" pass, AGENTS.md task
-# herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
+# docs/herdr-backend.md "Default task container shape"). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>

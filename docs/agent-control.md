@@ -3,13 +3,12 @@
 Firstmate talks to a running agent two ways, and they are not the same channel.
 
 The **data plane** is [`bin/fm-send.sh`](../bin/fm-send.sh): conversational text for the agent to read.
-For a `kind=secondmate` target it always prepends the from-firstmate routing marker, because a secondmate is itself a firstmate and its reply must come back through the status path rather than a chat nobody reads.
 
 The **control plane** is [`bin/fm-control.sh`](../bin/fm-control.sh): allowlisted lifecycle verbs addressed to an exact task id.
 
-The split exists because the data plane's marking is exactly right for a message and exactly wrong for a lifecycle command.
-A routing-marked `/quit` arrives as ordinary chat - `[fm-from-firstmate] /quit` - which the agent reasons about instead of executing.
-The failure repeated across harnesses and homes, and the workaround (remember to use an unmarked send for agent-control commands, and improvise the right key or command per harness) lived only in agent prose, so it failed again every time a session did not happen to recall it.
+The split exists because delivering text is exactly right for a message and exactly wrong for a lifecycle command.
+A `/quit` that arrives as ordinary chat is something the agent reasons about instead of executing.
+The failure repeated across harnesses and homes, and the workaround (improvise the right key or command per harness) lived only in agent prose, so it failed again every time a session did not happen to recall it.
 
 ## What the control plane owns
 
@@ -57,17 +56,14 @@ It is not deterministic across the verified adapters: codex and grok resume only
 
 1. **Resolve the profile.**
    An explicit `--harness`, `--model`, or `--effort` wins.
-   Otherwise a `kind=secondmate` task re-resolves its durable `config/secondmate-harness` pin, including that file's optional model and effort tokens, exactly as every other respawn does - so setting the pin and relaunching is the ordinary way to move a secondmate's runtime.
-   A ship or scout keeps the harness already recorded for it, because that harness comes from firstmate's dispatch-profile judgment at intake and must not be silently re-read from configuration.
+   Otherwise a ship or scout keeps the harness already recorded for it, because that harness comes from firstmate's dispatch-profile judgment at intake and must not be silently re-read from configuration.
    A recorded raw-command basename that differs from its resolved adapter cannot reproduce the command actually running, so relaunch refuses before the checkpoint unless the caller passes an explicit `--harness` to choose the replacement runtime deliberately.
    A harness change resets model and effort unless they are named too, because a model chosen for one adapter does not transfer to another.
 2. **Safe checkpoint.**
    The recorded worktree must exist and be a worktree root; its head and dirty state are recorded.
-   For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
-   A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
+   Only ship and scout tasks have a defined relaunch shape; any other recorded kind is refused before the agent is stopped.
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
-   A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
@@ -91,7 +87,6 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An unverified harness is refused rather than guessed at.
 - An implicit relaunch from a prefixed raw-command basename is refused before the agent or durable state is touched because its original launch command cannot be reconstructed.
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
-  Cursor and muse are crewmate and scout adapters only, so relaunching a secondmate onto either refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
   Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
 - `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.

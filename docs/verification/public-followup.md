@@ -59,7 +59,7 @@ ok - typed public-followup records carry only public-safe summaries and delivera
 The first case is the end-to-end proof.
 It reproduces the stranded state first (work bound, no reconciled terminal result, delivery refused with "still waiting on its bound work" and zero posts), then reports a typed `pr-merged` result against a `main`-addressed work binding, deletes the drained inbox payload, reconciles from disk, and asserts exactly one `connector/followup` call carrying the original `request_id`, a validated `posted` receipt, and a Done obligation.
 `register` and `--source-home`/`--work-home` now accept only `main`; the retired `secondmate:<id>` work-home addressing variant is refused as an ordinary invalid-shape parse error rather than silently accepted or special-cased (`fm-public-followup.sh`, `fm-public-followup-emit.sh`).
-The shared `fm_pf_home_id_valid` shape check in `fm-public-followup-lib.sh` still accepts `secondmate:<id>` because `bin/fm-teardown.sh`'s own marked-secondmate cleanup guard still constructs and validates that shape; the tests above that still reference `secondmate:<id>` (parent resolution, teardown refusal ordering, marked-child reporting) exercise that separate, still-live teardown path, not the retired addressing variant.
+The shared `fm_pf_home_id_valid` shape check in `fm-public-followup-lib.sh` now accepts only `main` as well.
 
 The existing Relay suite is unchanged by this work:
 

@@ -158,10 +158,48 @@ test_firstmate_detached_head_skipped() {
   pass "T10 firstmate detached HEAD is skipped"
 }
 
+test_firstmate_dirty_skipped() {
+  local w out before
+  w=$(new_world t11)
+  bump_origin "$w" instr
+  printf 'uncommitted\n' >> "$w/main/README.md"
+  before=$(git -C "$w/main" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: skipped: dirty working tree" "dirty firstmate skipped"
+  assert_contains "$out" "reread-firstmate: no" "no reread when dirty firstmate was skipped"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "dirty firstmate HEAD moved"
+  grep -qx 'uncommitted' "$w/main/README.md" \
+    || fail "dirty firstmate lost its uncommitted change"
+  pass "T11 dirty firstmate is skipped and its uncommitted work survives"
+}
+
+test_firstmate_diverged_skipped() {
+  local w out before
+  w=$(new_world t12)
+  bump_origin "$w" instr
+  printf 'local\n' > "$w/main/local.txt"
+  git -C "$w/main" add local.txt
+  git -C "$w/main" commit -qm local-only
+  before=$(git -C "$w/main" rev-parse HEAD)
+
+  out=$(run_update "$w")
+
+  assert_contains "$out" "firstmate: skipped: diverged from origin/main" "diverged firstmate skipped"
+  assert_contains "$out" "reread-firstmate: no" "no reread when diverged firstmate was skipped"
+  [ "$(git -C "$w/main" rev-parse HEAD)" = "$before" ] \
+    || fail "diverged firstmate HEAD moved"
+  pass "T12 diverged firstmate is skipped, never merged or forced"
+}
+
 test_updates_main
 test_reread_gate_is_instruction_only
 test_idempotent_already_current
 test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
+test_firstmate_dirty_skipped
+test_firstmate_diverged_skipped
 
 echo "# all fm-update tests passed"

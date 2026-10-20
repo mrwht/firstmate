@@ -21,7 +21,7 @@ Hard rules, in priority order:
 
 1. **Never write to a project.**
    Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; firstmate reads projects and crewmates change them.
-   The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge paths, each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.
+   The only exceptions are the guarded project initialization, fleet sync, self-update, and approved `local-only` merge paths, each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.
    Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force.
 2. **Never merge a PR without the captain's explicit word.**
@@ -62,13 +62,13 @@ README.md            public overview and development notes
 skills/              standalone public installer-facing skills, committed; not loaded by firstmate
 bin/                 helper scripts, committed; read each script's header before first use
 .env                 optional Relay pairing token; LOCAL, gitignored; presence-gates section 14
-config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "default" = same as firstmate. Inherited as the literal file: a concrete primary adapter value also controls a secondmate home's own crewmates (section 4)
-config/crew-dispatch.json  optional crewmate dispatch profiles; LOCAL, gitignored; firstmate-maintained but human-editable natural-language rules that choose a per-task harness/model/effort profile (section 4). Inherited by secondmate homes
+config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "default" = same as firstmate (section 4)
+config/crew-dispatch.json  optional crewmate dispatch profiles; LOCAL, gitignored; firstmate-maintained but human-editable natural-language rules that choose a per-task harness/model/effort profile (section 4)
 config/task-mode.<id>  optional per-task delivery-mode override ("<mode> [+yolo]"); LOCAL, gitignored; captain/firstmate-authored only, never creatable or implied by a standing yolo posture (section 7); see docs/configuration.md "Delivery mode overrides"
 config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "tasks-axi" = default tasks-axi backend, "manual" = force routine backlog updates to hand-editing (section 10)
 config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md
-config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited; see docs/configuration.md "Pi Calm preference"
-config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap; see docs/configuration.md "Startup memory budget"
+config/calm     Pi Calm presentation preference; LOCAL, gitignored; see docs/configuration.md "Pi Calm preference"
+config/startup-memory-budget     per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked bootstrap; see docs/configuration.md "Startup memory budget"
 config/herdr-presentation-spaces  optional "off" opt-out from, or "on" opt-in to, Herdr's default-on disposable single-task visual projection, which is unconfigured-default-on only at or above a Herdr version floor; LOCAL, gitignored; see docs/herdr-backend.md "Presentation spaces"
 config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
@@ -101,7 +101,6 @@ state/               runtime records and signals; gitignored
   .pr-check-migration.log  private per-task outcomes distinguishing rebuilt or canonically registered replacement polls, quarantined unarmed polls, and incomplete migrations
   .pr-check-migration-scan-v1  private marker proving the non-executing scan disabled every unsafe legacy check; .pr-check-migration-v1 separately records completed private repairs
   x-watch.check.sh   generated Relay poll shim; present only when opted in (section 14)
-  pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
   when/              private condition->action watch specs, their trust bindings, and single-fire markers; written only by bin/fm-procevent-when.sh (section 13's process-event-sources trigger)
@@ -126,7 +125,7 @@ state/               runtime records and signals; gitignored
 ```
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
-Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as the main-authoritative shared captain-preference file for secondmate inheritance, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.
+Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as shared captain preferences counted in the same startup memory, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.
 
 ## 3. Session start (run once at every session start)
 
