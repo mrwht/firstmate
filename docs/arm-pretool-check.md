@@ -76,9 +76,9 @@ This covers statically-visible literal words in command position; opaque dynamic
 `bin/fm-watch.sh` is protected but is not a blessed entry point.
 A direct `bin/fm-watch.sh` execution - relative, `<code-root>`-anchored, `$VAR`-prefixed, or `~`-prefixed - always denies with `watcher-direct`, whose reason points the caller at `bin/fm-watch-arm.sh` and `bin/fm-watch-checkpoint.sh`.
 
-`bin/fm-claude-stop-autoarm.sh` is Claude's Stop hook, not a model-run command.
+`bin/fm-claude-stop-autoarm.sh` is Claude's Stop and SessionStart hook, not a model-run command.
 A direct execution of it in any of those forms denies with `hook-direct`, because a hand-run really arms a watcher under the tool call.
-The hook itself also refuses to arm without a Claude Stop payload on stdin, so this deny is the early, visible half of that guard.
+The hook itself also refuses to arm without a Claude Stop or SessionStart payload on stdin, so this deny is the early, visible half of that guard.
 
 The same bytes in an argument, comment, assertion, documentation query, Python string, `printf`, or `tmux send-keys` payload are data and do not make the outer command relevant.
 
@@ -144,7 +144,7 @@ Every semantic deny includes one stable code in square brackets before its prose
 | `broad-watcher-kill` | An actual broad process kill targets the watcher. |
 | `unclassifiable-protected-command` | Malformed or unsupported syntax contains a protected command and cannot be safely classified. |
 | `watcher-direct` | A direct `bin/fm-watch.sh` execution; the watcher must be reached through `bin/fm-watch-arm.sh` or `bin/fm-watch-checkpoint.sh`. |
-| `hook-direct` | A direct `bin/fm-claude-stop-autoarm.sh` execution; that hook arms automatically when a Claude turn ends. |
+| `hook-direct` | A direct `bin/fm-claude-stop-autoarm.sh` execution; that hook arms automatically at interactive session open and when a Claude turn ends. |
 
 Reason codes are the stable contract for tests and adapters.
 Prose may improve without changing adapter behavior.

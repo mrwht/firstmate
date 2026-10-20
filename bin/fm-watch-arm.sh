@@ -65,6 +65,12 @@
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
 #
+# FM_WATCH_LEASE_DEADLINE (epoch seconds), when a hook-owned caller such as
+# bin/fm-claude-stop-autoarm.sh exports it, bounds the cycle before the harness
+# ends that hook: a forked watcher inherits it and closes with
+# "check: lease-renewal", and an attached follow prints that same line and
+# exits 0 at the deadline while leaving the attached watcher running.
+#
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
 # wins the singleton while the duplicate child stands down. It
@@ -330,6 +336,13 @@ close_unobserved_cycle() {
 attach_and_wait() {
   local attached_pid=$1
   while :; do
+    # The attached watcher was not forked under this arm's lease, so the arm
+    # closes its own follow at the deadline and leaves that watcher running.
+    if fm_watch_lease_expired; then
+      cycle_log_append unknown unknown lease-renewal none
+      echo "check: lease-renewal"
+      return 0
+    fi
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"

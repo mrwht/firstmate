@@ -366,6 +366,62 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+### Claude hook budget and session-open arm
+
+Verified on 2026-10-15 against Claude Code 2.1.292 (Homebrew cask), supporting the seven-day auto-arm budget, its lease renewal, and the interactive session-open arm owned by [`watcher-continuity.md`](../watcher-continuity.md#hook-budget-and-lease-renewal).
+
+Static reading of the shipped bundle (`strings` over the `claude` binary) found three facts:
+
+- The hook schema declares `timeout` as `positive().optional()` with no maximum.
+- The command-hook runner computes `e.timeout*1000` and arms one `setTimeout` with that value, with no clamp, and an expiry ends the hook's process group.
+- An `asyncRewake` hook is backgrounded only when `isInteractive()` or `hasStreamingInput()` holds; otherwise it runs synchronously.
+
+The live lab was a throwaway git directory with its own `.claude/settings.json`, an isolated `tmux -L` server started under `env -i`, and an untouched interactive `claude --model haiku` session.
+Each `SessionStart` `asyncRewake` probe logged its start, a liveness line every 30 seconds, and the signal that ended it.
+
+| Probe `timeout` | Observed |
+| --- | --- |
+| `30` (separate clean session) | `TERM at=1792105298 elapsed=30` |
+| `604800` | still alive with no signal at `elapsed=2432` when this record was first written, and still alive with no signal at a later check at `elapsed=349764` (about 4.05 days), past both the old 8-hour budget and 24 hours, so any clamp would have to exceed that |
+| `3000000` (above the 24.8-day JavaScript ceiling) | alive at the same elapsed time; Bun did not fire an overflowing delay early, so the ceiling is a conservative bound rather than an observed failure |
+
+Hook environment captured from the same Claude build, which the session-open arm reads as interactive-session evidence:
+
+| Launch | `CLAUDE_CODE_ENTRYPOINT` | `CLAUDE_CODE_SESSION_ATTENDED` |
+| --- | --- | --- |
+| interactive `claude` | `cli` | `1` |
+| `claude -p` | `sdk-cli` | `0` |
+
+The opt-in live guard refreshes the session-open and print-mode behavior end to end:
+
+```sh
+FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - Claude 2.1.292 (Claude Code) live E2E reclaimed a stale session lock through session start, completed two tokenless Stop-owned rewake cycles, kept the print-mode session-open arm inert, preserved the competing-live-owner boundary, and armed plus rewoke an untouched interactive session at session open with a six-day lease
+```
+
+The print-mode phase of that guard had been failing on 2.1.292 before this change (`expected exactly 2 hook-owned arm cycles, got 1`), because the run-tier digest now drains once more at session start; its fixture now keys on the arm count and counts only model-issued drains.
+
+The deterministic regression set for this change ran on the same day with the pinned ShellCheck:
+
+```sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-watch-arm.test.sh tests/fm-turnend-guard.test.sh tests/fm-sessionstart-nudge.test.sh tests/fm-session-start.test.sh tests/fm-supervision-instructions.test.sh tests/fm-guard-stale-banner.test.sh tests/fm-watcher-lock.test.sh tests/fm-wake-queue.test.sh tests/fm-session-lock-ancestry.test.sh tests/fm-watch-triage.test.sh tests/fm-documentation-audiences.test.sh
+```
+
+Observed output:
+
+```text
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
+fm-doc-audience-check: ok surfaces=69 local_links=255
+FM_TEST_SUMMARY total=12 failed=0 skipped_gate=0 duration_ms=631872
+```
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

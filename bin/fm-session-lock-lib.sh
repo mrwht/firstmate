@@ -4,8 +4,9 @@
 # ONE owner of the "which verified-harness process holds this home's session
 # lock, and does the current process descend from that same harness?" decision.
 # bin/fm-lock.sh uses it to acquire and inspect state/.lock;
-# bin/fm-claude-stop-autoarm.sh uses it to prove a Stop hook fires inside the
-# lock-owning primary session before it may arm or rewake.
+# bin/fm-claude-stop-autoarm.sh uses it to prove a Stop or session-open hook
+# fires inside the lock-owning primary session before it may arm or rewake, and
+# it and bin/fm-sessionstart-run.sh share fm_session_start_completed_by_self.
 # This file is sourced by scripts and has no side effects on source.
 
 # Known harness command names; extend when a new adapter is verified.
@@ -159,4 +160,21 @@ fm_session_lock_owned_by_self() {
 $pids
 EOF
   return 1
+}
+
+# True when state dir $1 records a completed full session start for the session
+# lock this process's own harness ancestry holds: the lock and
+# state/.session-start-complete are regular files, the lock is owned by self,
+# and the completion record names that same lock pid. bin/fm-session-start.sh
+# clears the record after acquiring the lock and republishes it only after every
+# stage completes, so a truncated or lock-refused startup never satisfies this.
+fm_session_start_completed_by_self() {
+  local state=$1 lock_pid completion_pid
+  [ -f "$state/.lock" ] && [ ! -L "$state/.lock" ] || return 1
+  [ -f "$state/.session-start-complete" ] && [ ! -L "$state/.session-start-complete" ] || return 1
+  fm_session_lock_owned_by_self "$state" || return 1
+  lock_pid=$(cat "$state/.lock" 2>/dev/null) || return 1
+  completion_pid=$(cat "$state/.session-start-complete" 2>/dev/null) || return 1
+  case "$lock_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$completion_pid" = "$lock_pid" ]
 }

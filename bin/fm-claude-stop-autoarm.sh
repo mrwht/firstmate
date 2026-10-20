@@ -1,16 +1,43 @@
 #!/usr/bin/env bash
-# Claude Stop-owned watcher auto-arm (asyncRewake hook).
+# Claude hook-owned watcher auto-arm (asyncRewake hook).
 #
-# Registered in tracked .claude/settings.json as a Stop command hook with
-# "asyncRewake": true and an explicit multi-hour timeout. Claude Code fires it
-# in the background on EVERY Stop of a Claude primary session, with no
-# deduplication across firings. It owns routine tokenless watcher continuity
-# for the Claude primary:
+# Usage: fm-claude-stop-autoarm.sh [--hook-timeout <seconds>]
+#   The hook payload arrives on stdin. --hook-timeout repeats the registered
+#   hook's own "timeout" so this process knows when Claude will end it.
+#
+# Registered in tracked .claude/settings.json twice, each with "asyncRewake":
+# true and the same explicit multi-day timeout: as a Stop command hook, which
+# Claude Code fires in the background on EVERY Stop of a Claude primary session
+# with no deduplication across firings, and as a SessionStart command hook, so a
+# freshly opened session that never ends a turn is still supervised. The
+# payload's hook_event_name selects the mode. Together they own routine
+# tokenless watcher continuity for the Claude primary:
+#
+#   - Session open: a SessionStart firing arms only for source startup or
+#     clear (compact and resume leave arming to the first Stop) and only in an
+#     interactive session,
+#     the only kind in which Claude backgrounds an asyncRewake hook
+#     (CLAUDE_CODE_ENTRYPOINT=cli or CLAUDE_CODE_SESSION_ATTENDED=1); a print-mode
+#     session runs hooks synchronously and must never block on a watcher cycle.
+#     It runs beside the session-start digest hook, so it first waits a
+#     bounded time (FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT, default 240s) for
+#     state/.session-start-complete to name the session lock
+#     this session's own harness ancestry holds. A lock another live session
+#     holds (a read-only session), a truncated startup, or a session that only
+#     received the nudge exits 0 without arming; the first Stop arms instead.
+#     This mode never reclaims a stale session lock: session start owns that.
+#   - Lease renewal: Claude ends the hook's process group when its timeout
+#     expires, and nothing re-arms until the next turn ends. With --hook-timeout
+#     the owner exports FM_WATCH_LEASE_DEADLINE, one seventh of the budget before
+#     Claude's deadline, and the arm layer closes the cycle there with the typed
+#     wake "check: lease-renewal". This hook translates it into its own exit-2
+#     banner so one silent handling turn re-arms with a fresh budget.
 #
 #   - Payload: only a Claude hook payload on stdin whose hook_event_name is an
-#     event this hook serves (Stop). A hand-run, --help, or any other input
-#     prints usage and exits 0 without arming; extend the event case below to
-#     serve another hook event.
+#     event this hook serves (Stop or SessionStart). A hand-run, --help, any
+#     argument other than --hook-timeout, or any other input prints usage and
+#     exits 0 without arming; extend the event case below to serve another
+#     hook event.
 #   - Scope: only a genuine primary checkout (plain checkout) with AGENTS.md,
 #     bin/, and the effective state dir - the exact fm-turnend-guard.sh scope.
 #     Child crew/scout worktrees stay inert.
@@ -84,48 +111,106 @@ esac
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 usage() {
-  cat <<'EOF'
-Usage: fm-claude-stop-autoarm.sh < <Claude hook JSON payload>
+  cat <<'USAGE'
+Usage: fm-claude-stop-autoarm.sh [--hook-timeout <seconds>] < <Claude hook JSON payload>
 
-Claude Code runs this as the primary session's Stop asyncRewake hook
-(.claude/settings.json); it is not a manual command. It arms the watcher only
-when stdin carries a Claude hook payload for an event it serves
-(hook_event_name "Stop"). Run by hand, with --help, or with any other input,
-it prints this usage and exits without arming.
-EOF
+Claude Code runs this as the primary session's Stop and SessionStart
+asyncRewake hook (.claude/settings.json); it is not a manual command. It arms
+the watcher only when stdin carries a Claude hook payload for an event it
+serves (hook_event_name "Stop" or "SessionStart"). --hook-timeout repeats the
+registered hook's own timeout so the arm can renew its lease before Claude
+ends it; a non-numeric value means no lease. Run by hand, with --help, or with
+any other argument or input, it prints this usage and exits without arming.
+USAGE
 }
 
-case "${1:-}" in
-  '') ;;
-  -h|--help) usage; exit 0 ;;
-  *) usage >&2; exit 0 ;;
+HOOK_TIMEOUT=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --hook-timeout)
+      HOOK_TIMEOUT=${2:-}
+      if [ $# -ge 2 ]; then shift 2; else shift; fi
+      ;;
+    --hook-timeout=*) HOOK_TIMEOUT=${1#--hook-timeout=}; shift ;;
+    *) usage >&2; exit 0 ;;
+  esac
+done
+case "$HOOK_TIMEOUT" in
+  ''|*[!0-9]*) HOOK_TIMEOUT= ;;
 esac
+HOOK_STARTED_AT=$(date +%s)
 
 # Refuse anything but a real Claude hook payload for an event this hook serves,
 # so a hand-run or stray invocation never arms (or later rewakes) a session.
 # Read the payload once and in full, so a slow writer can never wedge on a full
 # pipe. An interactive stdin is a hand-run, never a hook, so do not block on it.
 # jq parses the payload strictly; a home without jq falls back to reading the
-# top-level key directly rather than losing Stop-owned continuity.
+# top-level key directly rather than losing hook-owned continuity.
 if [ -t 0 ]; then
   usage >&2
   exit 0
 fi
 PAYLOAD=$(cat 2>/dev/null || true)
-if command -v jq >/dev/null 2>&1; then
-  HOOK_EVENT=$(printf '%s' "$PAYLOAD" \
-    | jq -r 'if type == "object" then (.hook_event_name // "") else "" end' 2>/dev/null || true)
-else
-  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | tr -d '\n' \
-    | sed -n 's/^[[:space:]]*{.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*}[[:space:]]*$/\1/p')
-fi
+payload_field() {  # <top-level key>
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$PAYLOAD" \
+      | jq -r --arg k "$1" 'if type == "object" then (.[$k] // "") else "" end' 2>/dev/null || true
+  else
+    printf '%s' "$PAYLOAD" | tr -d '\n' \
+      | sed -n 's/^[[:space:]]*{.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*}[[:space:]]*$/\1/p'
+  fi
+}
+HOOK_EVENT=$(payload_field hook_event_name)
 case "$HOOK_EVENT" in
-  Stop) ;;
+  Stop|SessionStart) ;;
   *) usage >&2; exit 0 ;;
 esac
 
 # --- scope: genuine primary checkout only -----------------------------------
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
+
+# --- session open: wait for this session's own completed session start -------
+# SessionStart hooks run concurrently, so the digest hook may still be acquiring
+# the lock and presenting the wake queue. Arm only after the completion record
+# proves this session took the helm; a live competing owner is a read-only
+# session and ends the wait at once.
+if [ "$HOOK_EVENT" = SessionStart ]; then
+  # Only a fresh or cleared session opens without a watcher cycle. Compaction
+  # fires mid-turn after a prior cycle may have released the owner lock, and a
+  # resume only receives the nudge, so both leave arming to the first Stop.
+  case "$(payload_field source)" in
+    startup|clear) ;;
+    *) exit 0 ;;
+  esac
+  # Claude backgrounds an asyncRewake hook only for an interactive session (or
+  # streaming SDK input); otherwise it runs the hook synchronously, where an
+  # armed cycle would hold session initialization open until the next wake.
+  # Arm only on positive evidence of an interactive session; either vendor
+  # signal suffices so neither string alone is load-bearing, and missing
+  # evidence leaves the first Stop to arm exactly as before.
+  [ "${CLAUDE_CODE_ENTRYPOINT:-}" = cli ] || [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = 1 ] || exit 0
+  SESSIONSTART_WAIT=${FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT:-240}
+  case "$SESSIONSTART_WAIT" in ''|*[!0-9]*) SESSIONSTART_WAIT=240 ;; esac
+  wait_deadline=$((HOOK_STARTED_AT + SESSIONSTART_WAIT))
+  until fm_session_start_completed_by_self "$STATE"; do
+    if ! fm_session_lock_owned_by_self "$STATE"; then
+      LOCK_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
+      # The digest hook may claim the lock for this session between the two
+      # reads, so a live owner refuses only while it is still not this session.
+      case "$LOCK_PID" in
+        ''|*[!0-9]*) ;;
+        *)
+          if fm_harness_pid_alive "$LOCK_PID" && ! fm_session_lock_owned_by_self "$STATE"; then
+            exit 0
+          fi
+          ;;
+      esac
+    fi
+    [ "$(date +%s)" -lt "$wait_deadline" ] || exit 0
+    sleep 1
+  done
+fi
 
 # --- identity: only the lock-owning session's hooks may arm ------------------
 # A prior session may have died after leaving its numeric harness pid in .lock.
@@ -190,6 +275,17 @@ write_epoch() {  # <outcome>
 }
 
 write_epoch arming
+
+# Lease: close the cycle with a typed renewal wake one seventh of the hook
+# budget before Claude's own timeout would end this process group without a
+# rewake. The margin also absorbs Claude's sleep-inclusive timer firing late on
+# wake from a long system sleep. Without a known budget no lease is set.
+if [ -n "$HOOK_TIMEOUT" ] && [ "$HOOK_TIMEOUT" -ge 7 ]; then
+  FM_WATCH_LEASE_DEADLINE=$((HOOK_STARTED_AT + HOOK_TIMEOUT - HOOK_TIMEOUT / 7))
+  export FM_WATCH_LEASE_DEADLINE
+else
+  unset FM_WATCH_LEASE_DEADLINE
+fi
 
 # X mode cadence: source the generated config so an X instance polls at its
 # 30s cadence (fm-bootstrap.sh x_mode_setup contract).
@@ -270,6 +366,17 @@ fi
 
 if [ "$ACTIONABLE" -eq 1 ]; then
   write_epoch rewake
+  # A cycle whose only reason is the lease carries no fleet event: say so, so
+  # the handling turn stays silent and cheap instead of looking for work.
+  if ! grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | grep -qv '^check: lease-renewal$'; then
+    {
+      printf 'firstmate supervision lease renewal - no fleet event; the hook budget is nearly spent.\n'
+      printf 'check: lease-renewal\n'
+      printf 'Run bin/fm-wake-drain.sh, handle anything it presents, then run its exact WAKE_ACK_REQUIRED --ack-through command. Send no captain-facing message for the renewal itself: end the turn and the Stop hook re-arms with a fresh budget - do NOT run bin/fm-watch-arm.sh.\n'
+    } >&2
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 2
+  fi
   {
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8

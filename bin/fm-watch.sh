@@ -56,6 +56,9 @@
 #   check: inactive-outcome bounded poll-loop reconciliation found a suspicious
 #                          inactive terminal outcome that still lacks its durable
 #                          upstream receipt
+#   check: lease-renewal   FM_WATCH_LEASE_DEADLINE (epoch seconds, exported by a
+#                          hook-owned arm) has passed; no fleet event, the owning
+#                          hook needs one handling turn to re-arm with a fresh budget
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -1207,6 +1210,13 @@ EOF
       echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak"
       triage_log "absorbed heartbeat (no captain-relevant change)"
     fi
+  fi
+
+  # Lease: a hook-owned arm exports the wall-clock deadline before its harness
+  # ends the hook's process group (bin/fm-claude-stop-autoarm.sh). Close this
+  # cycle with the typed renewal wake while that rewake can still be delivered.
+  if fm_watch_lease_expired; then
+    wake "check: lease-renewal"
   fi
 
   # Terminal wait: a bounded native-event wait for push-capable homes (herdr),
