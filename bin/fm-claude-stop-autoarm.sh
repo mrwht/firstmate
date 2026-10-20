@@ -196,9 +196,15 @@ if [ "$HOOK_EVENT" = SessionStart ]; then
   until fm_session_start_completed_by_self "$STATE"; do
     if ! fm_session_lock_owned_by_self "$STATE"; then
       LOCK_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
+      # The digest hook may claim the lock for this session between the two
+      # reads, so a live owner refuses only while it is still not this session.
       case "$LOCK_PID" in
         ''|*[!0-9]*) ;;
-        *) fm_harness_pid_alive "$LOCK_PID" && exit 0 ;;
+        *)
+          if fm_harness_pid_alive "$LOCK_PID" && ! fm_session_lock_owned_by_self "$STATE"; then
+            exit 0
+          fi
+          ;;
       esac
     fi
     [ "$(date +%s)" -lt "$wait_deadline" ] || exit 0

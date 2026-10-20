@@ -22,6 +22,10 @@ FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
 ln -s /bin/bash "$FAKEBIN/claude"
 FAKE_CLAUDE="$FAKEBIN/claude"
 export FAKE_CLAUDE
+# bash execs the last command of a -c string in place of itself when nothing
+# follows it, so a hook run that way loses its fake-claude parent. Every
+# "$FAKE_CLAUDE" -c that runs the hook therefore ends with a later command
+# (exit $?, or at least a trailing newline) to keep the harness as its parent.
 
 # Copy the hook and its sourced dependencies into a fixture checkout.
 install_autoarm_scripts() {
@@ -351,7 +355,8 @@ test_sessionstart_inert_in_read_only_session() {
   started=$(date +%s)
   out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
     | CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 FM_HOME="$dir" \
-      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800' 2>&1); status=$?
+      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800
+      exit $?' 2>&1); status=$?
   elapsed=$(( $(date +%s) - started ))
   kill "$other" 2>/dev/null || true
   wait "$other" 2>/dev/null || true
@@ -377,7 +382,8 @@ test_sessionstart_bounded_wait_without_completion() {
   write_arm_fixture "$dir" actionable
   out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
     | CLAUDE_CODE_ENTRYPOINT=cli FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT=2 FM_HOME="$dir" \
-      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800' 2>&1); status=$?
+      "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800
+      exit $?' 2>&1); status=$?
   expect_code 0 "$status" "session open must not reclaim a stale lock itself"
   [ "$(cat "$dir/state/.lock")" = 9999999 ] || fail "session open reclaimed a stale lock that session start owns"
   [ ! -e "$dir/state/arm-ran" ] || fail "session open armed over a stale lock"
@@ -432,7 +438,8 @@ test_lease_deadline_derives_from_hook_timeout() {
   before=$(date +%s)
   printf '%s\n' '{"hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '
     printf "%s\n" "$$" > "$FM_HOME/state/.lock"
-    "$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 700' >/dev/null 2>&1; status=$?
+    "$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 700
+    exit $?' >/dev/null 2>&1; status=$?
   after=$(date +%s)
   expect_code 2 "$status" "the leased cycle must still translate its actionable close"
   deadline=$(cat "$dir/state/lease-deadline")
@@ -442,7 +449,8 @@ test_lease_deadline_derives_from_hook_timeout() {
   rm -f "$dir/state/lease-deadline"
   printf '%s\n' '{"hook_event_name":"Stop"}' | FM_WATCH_LEASE_DEADLINE=1 FM_HOME="$dir" "$FAKE_CLAUDE" -c '
     printf "%s\n" "$$" > "$FM_HOME/state/.lock"
-    "$FM_HOME/bin/fm-claude-stop-autoarm.sh"' >/dev/null 2>&1
+    "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+    exit $?' >/dev/null 2>&1
   [ "$(cat "$dir/state/lease-deadline")" = unset ] || fail "without --hook-timeout no lease (not even an inherited one) may reach the arm"
   pass "auto-arm: the lease deadline is one seventh of --hook-timeout before Claude's deadline, and absent without it"
 }
@@ -530,7 +538,8 @@ test_inert_when_lock_held_by_other_harness() {
   "$FAKE_CLAUDE" -c 'sleep 60; :' &
   other=$!
   printf '%s\n' "$other" > "$dir/state/.lock"
-  out=$(printf '%s\n' '{"session_id":"s","hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"s","hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      exit $?' 2>&1); status=$?
   owner_after=$(cat "$dir/state/.lock")
   kill "$other" 2>/dev/null || true
   wait "$other" 2>/dev/null || true
@@ -564,7 +573,8 @@ test_stale_lock_recovery_preserves_afk_and_need_gates() {
   : > "$afk_dir/state/.afk"
   printf '9999999\n' > "$afk_dir/state/.lock"
   write_arm_fixture "$afk_dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale-afk","hook_event_name":"Stop"}' | FM_HOME="$afk_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"stale-afk","hook_event_name":"Stop"}' | FM_HOME="$afk_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      exit $?' 2>&1); status=$?
   expect_code 0 "$status" "a stale owner must not widen the AFK gate"
   [ "$(cat "$afk_dir/state/.lock")" = 9999999 ] || fail "AFK stale lock was reclaimed despite away ownership"
   [ ! -e "$afk_dir/state/arm-ran" ] || fail "stale AFK home armed"
@@ -572,7 +582,8 @@ test_stale_lock_recovery_preserves_afk_and_need_gates() {
   idle_dir=$(make_primary_dir "$TMP_ROOT/stale-idle")
   printf '9999999\n' > "$idle_dir/state/.lock"
   write_arm_fixture "$idle_dir" actionable
-  out=$(printf '%s\n' '{"session_id":"stale-idle","hook_event_name":"Stop"}' | FM_HOME="$idle_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"' 2>&1); status=$?
+  out=$(printf '%s\n' '{"session_id":"stale-idle","hook_event_name":"Stop"}' | FM_HOME="$idle_dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+      exit $?' 2>&1); status=$?
   expect_code 0 "$status" "a stale owner must not widen the supervision-need gate"
   [ "$(cat "$idle_dir/state/.lock")" = 9999999 ] || fail "idle stale lock was reclaimed without supervision need"
   [ ! -e "$idle_dir/state/arm-ran" ] || fail "stale idle home armed"
