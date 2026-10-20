@@ -13,7 +13,9 @@
 # payload's hook_event_name selects the mode. Together they own routine
 # tokenless watcher continuity for the Claude primary:
 #
-#   - Session open: a SessionStart firing arms only in an interactive session,
+#   - Session open: a SessionStart firing arms only for source startup or
+#     clear (compact and resume leave arming to the first Stop) and only in an
+#     interactive session,
 #     the only kind in which Claude backgrounds an asyncRewake hook
 #     (CLAUDE_CODE_ENTRYPOINT=cli or CLAUDE_CODE_SESSION_ATTENDED=1); a print-mode
 #     session runs hooks synchronously and must never block on a watcher cycle.
@@ -150,13 +152,16 @@ if [ -t 0 ]; then
   exit 0
 fi
 PAYLOAD=$(cat 2>/dev/null || true)
-if command -v jq >/dev/null 2>&1; then
-  HOOK_EVENT=$(printf '%s' "$PAYLOAD" \
-    | jq -r 'if type == "object" then (.hook_event_name // "") else "" end' 2>/dev/null || true)
-else
-  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | tr -d '\n' \
-    | sed -n 's/^[[:space:]]*{.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*}[[:space:]]*$/\1/p')
-fi
+payload_field() {  # <top-level key>
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$PAYLOAD" \
+      | jq -r --arg k "$1" 'if type == "object" then (.[$k] // "") else "" end' 2>/dev/null || true
+  else
+    printf '%s' "$PAYLOAD" | tr -d '\n' \
+      | sed -n 's/^[[:space:]]*{.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*}[[:space:]]*$/\1/p'
+  fi
+}
+HOOK_EVENT=$(payload_field hook_event_name)
 case "$HOOK_EVENT" in
   Stop|SessionStart) ;;
   *) usage >&2; exit 0 ;;
@@ -171,6 +176,13 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 # proves this session took the helm; a live competing owner is a read-only
 # session and ends the wait at once.
 if [ "$HOOK_EVENT" = SessionStart ]; then
+  # Only a fresh or cleared session opens without a watcher cycle. Compaction
+  # fires mid-turn after a prior cycle may have released the owner lock, and a
+  # resume only receives the nudge, so both leave arming to the first Stop.
+  case "$(payload_field source)" in
+    startup|clear) ;;
+    *) exit 0 ;;
+  esac
   # Claude backgrounds an asyncRewake hook only for an interactive session (or
   # streaming SDK input); otherwise it runs the hook synchronously, where an
   # armed cycle would hold session initialization open until the next wake.

@@ -218,11 +218,12 @@ test_tracked_registrations_repeat_their_timeout() {
 # Run the hook as a SessionStart firing inside a fake harness that holds the
 # lock. $1 = fixture dir, $2 = completion mode: completed (session start already
 # completed for this harness), late (completes 2s after the hook starts), or
-# none (never completes). Interactive-session evidence comes from the caller's
-# environment: CLAUDE_CODE_ENTRYPOINT and CLAUDE_CODE_SESSION_ATTENDED.
+# none (never completes), $3 = payload source (default startup).
+# Interactive-session evidence comes from the caller's environment:
+# CLAUDE_CODE_ENTRYPOINT and CLAUDE_CODE_SESSION_ATTENDED.
 run_sessionstart_autoarm() {
-  local dir=$1 completion=$2 rc=0
-  printf '%s\n' '{"session_id":"sess-open","hook_event_name":"SessionStart","source":"startup"}' \
+  local dir=$1 completion=$2 source=${3:-startup} rc=0
+  printf '{"session_id":"sess-open","hook_event_name":"SessionStart","source":"%s"}\n' "$source" \
     | FM_HOME="$dir" COMPLETION="$completion" "$FAKE_CLAUDE" -c '
         case "$COMPLETION" in
           completed)
@@ -279,6 +280,30 @@ test_sessionstart_waits_for_concurrent_session_start() {
   [ "$(cat "$dir/state/arm-saw-completion")" = "$(cat "$dir/state/.lock")" ] \
     || fail "session-open arm must follow the completion recorded for its own session lock"
   pass "auto-arm: SessionStart waits for the concurrently running session start before arming"
+}
+
+# Compaction can fire mid-turn after the prior cycle released the owner lock,
+# while this session's completion record still names its own lock; resume only
+# receives the nudge. Only startup and clear open a session without a cycle.
+test_sessionstart_arms_only_on_session_open_sources() {
+  local dir out status source
+  for source in compact resume; do
+    dir=$(make_primary_dir "$TMP_ROOT/ss-source-$source")
+    : > "$dir/state/task.meta"
+    write_arm_fixture "$dir" actionable
+    out=$(CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 run_sessionstart_autoarm "$dir" completed "$source"); status=$?
+    expect_code 0 "$status" "SessionStart source=$source must leave arming to the first Stop"
+    [ -z "$out" ] || fail "SessionStart source=$source produced output: $out"
+    [ ! -e "$dir/state/arm-ran" ] || fail "SessionStart source=$source armed a cycle"
+    [ ! -e "$dir/state/.claude-autoarm-epoch" ] || fail "SessionStart source=$source claimed an auto-arm epoch"
+  done
+  dir=$(make_primary_dir "$TMP_ROOT/ss-source-clear")
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 run_sessionstart_autoarm "$dir" completed clear >/dev/null; status=$?
+  expect_code 2 "$status" "SessionStart source=clear must arm the cleared session"
+  [ "$(wc -l < "$dir/state/arm-ran" | tr -d ' ')" -eq 1 ] || fail "SessionStart source=clear must arm exactly once"
+  pass "auto-arm: SessionStart arms on startup and clear but leaves compact and resume to the first Stop"
 }
 
 test_sessionstart_needs_interactive_evidence() {
@@ -350,7 +375,7 @@ test_sessionstart_bounded_wait_without_completion() {
   : > "$dir/state/task.meta"
   printf '9999999\n' > "$dir/state/.lock"
   write_arm_fixture "$dir" actionable
-  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"resume"}' \
+  out=$(printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' \
     | CLAUDE_CODE_ENTRYPOINT=cli FM_CLAUDE_AUTOARM_SESSIONSTART_WAIT=2 FM_HOME="$dir" \
       "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800' 2>&1); status=$?
   expect_code 0 "$status" "session open must not reclaim a stale lock itself"
@@ -963,6 +988,7 @@ test_fm_lock_status_still_works_with_shared_lib() {
 test_tracked_registrations_repeat_their_timeout
 test_sessionstart_arms_interactive_session_after_its_start
 test_sessionstart_waits_for_concurrent_session_start
+test_sessionstart_arms_only_on_session_open_sources
 test_sessionstart_needs_interactive_evidence
 test_sessionstart_either_interactive_signal_suffices
 test_sessionstart_inert_in_read_only_session

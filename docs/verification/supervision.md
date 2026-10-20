@@ -382,7 +382,7 @@ Each `SessionStart` `asyncRewake` probe logged its start, a liveness line every 
 | Probe `timeout` | Observed |
 | --- | --- |
 | `30` (separate clean session) | `TERM at=1792105298 elapsed=30` |
-| `604800` | still alive with no signal at `elapsed=2432` when this record was written, so any clamp would have to exceed that |
+| `604800` | still alive with no signal at `elapsed=2432` when this record was first written, and still alive with no signal at a later check at `elapsed=349764` (about 4.05 days), past both the old 8-hour budget and 24 hours, so any clamp would have to exceed that |
 | `3000000` (above the 24.8-day JavaScript ceiling) | alive at the same elapsed time; Bun did not fire an overflowing delay early, so the ceiling is a conservative bound rather than an observed failure |
 
 Hook environment captured from the same Claude build, which the session-open arm reads as interactive-session evidence:
