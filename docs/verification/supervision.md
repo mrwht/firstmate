@@ -306,6 +306,8 @@ Observed output:
 FM_TEST_SUMMARY total=8 failed=0 skipped_gate=0 duration_ms=617507
 ```
 
+`tests/fm-secondmate-safety.test.sh` was later retired with the secondmate strip, so it no longer runs and this recorded command now fails on the missing file.
+
 The actionable-close ordering correction was reverified on 2026-08-02 against an identity-matched live successor.
 
 ```sh
