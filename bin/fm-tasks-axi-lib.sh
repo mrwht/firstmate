@@ -8,8 +8,8 @@
 # rewrites.
 # FM_TASKS_AXI_MIN follows the axi-family floor policy owned beside the floor
 # constants in bin/fm-bootstrap.sh.
-# The feature probe is a separate concern and stay as defense in depth for
-# stripped or forked builds that advertise a current version without those flags.
+# The feature probe is a separate concern and stays as defense in depth for
+# stripped or forked builds that advertise a current version without that flag.
 # `config/backlog-backend=manual` opts out of tasks-axi for routine firstmate
 # backlog mutations.
 # Absent or any other value keeps the default tasks-axi backend path, falling
