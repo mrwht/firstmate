@@ -52,6 +52,8 @@
 #   FM_TEST_SUMMARY total=<n> failed=<n> skipped_gate=<n> duration_ms=<n>
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
+#   FM_TEST_HINT <text>   one line, only when failed > 0, pointing at the
+#                         self-expiring tests/fm-cpu-stress.sh for load repros
 #
 # Exit status is non-zero if any selected script exits non-zero or a configured
 # --fail-on-gate-skip token appears. Other gate skips (first meaningful line
@@ -146,7 +148,7 @@ family_for_basename() {
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
     fm-transition-lib.test.sh|\
-    fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
+    fm-test-run.test.sh|fm-test-isolation-proof.test.sh|fm-cpu-stress.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
@@ -818,7 +820,7 @@ families_for_test_reference() {
 families_for_changed_path() {
   local path=$1 fixture_ref
   case "$path" in
-    tests/fm-test-run.test.sh)
+    tests/fm-test-run.test.sh|tests/fm-cpu-stress.sh)
       printf '%s\n' pure-contract-unit
       ;;
     tests/fm-backend-herdr-eventwait.test.py)
@@ -1654,6 +1656,12 @@ fi
 
 printf 'FM_TEST_SUMMARY total=%s failed=%s skipped_gate=%s duration_ms=%s\n' \
   "$TOTAL" "$FAILED" "$SKIPPED_GATE" "$RUN_DURATION"
+
+# Gate agents never read AGENTS.md, so the runner's own output is the one place
+# they always see how to reproduce a load-sensitive failure safely.
+if [ "$FAILED" -gt 0 ]; then
+  printf '%s\n' "FM_TEST_HINT reproduce load-sensitive failures with tests/fm-cpu-stress.sh --workers N --seconds S (self-expiring); never start unbounded CPU load such as 'yes &'"
+fi
 
 if [ -s "$FAMILIES_TSV" ]; then
   # Stable family summary order by name.
