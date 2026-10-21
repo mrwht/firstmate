@@ -34,6 +34,13 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Shrink fm-spawn's pane waits (bin/fm-spawn.sh header owns the knobs): fake
+# backends answer instantly, so the production 1s cwd-confirmation spacing and
+# 0.3s send settles only add wall time. A test that spawns into a real tmux or
+# Herdr pane must unset both to keep production timing.
+export FM_SPAWN_CWD_POLL_INTERVAL=${FM_SPAWN_CWD_POLL_INTERVAL:-0.1}
+export FM_SPAWN_SEND_SETTLE=${FM_SPAWN_SEND_SETTLE:-0}
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

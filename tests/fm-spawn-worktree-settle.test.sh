@@ -121,7 +121,7 @@ test_single_stale_first_read_is_not_accepted() {
 }
 
 # A pane that reports the real worktree from the very first read still only
-# costs the loop's existing one-second inter-poll sleep to confirm - not an
+# costs the loop's existing inter-poll sleep to confirm - not an
 # extra full cycle on top of that.
 test_already_settled_pane_costs_one_confirm_sleep() {
   local rec id out status start end elapsed
@@ -141,7 +141,72 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+# The two-read confirmation is a property of the loop, not of its spacing: at the
+# fast test interval a single stale first read must still be rejected, and the
+# pane must be read exactly three times (stale, then two agreeing settled reads).
+test_stale_read_rejected_at_fast_interval() {
+  local rec id out status reads
+  id=settle-fast-interval-z3
+  rec=$(make_settle_case settle-fast-interval "$id" 1)
+  read_settle_record "$rec"
+
+  out=$(FM_SPAWN_CWD_POLL_INTERVAL=0.1 run_settle_spawn "$id")
+  status=$?
+  expect_code 0 "$status" "spawn should succeed at a 0.1s cwd poll interval"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the settled worktree at a 0.1s interval"
+  assert_no_grep "worktree=$STALE_DIR" "$HOME_DIR/state/$id.meta" \
+    "meta accepted the transient stale path at a 0.1s interval"
+  reads=$(cat "$COUNTFILE")
+  [ "$reads" = 3 ] || fail "expected 3 pane_current_path reads (stale + two agreeing), got $reads"
+  pass "a single stale read is rejected at a 0.1s cwd poll interval"
+}
+
+# With neither knob set, spawn keeps the production spacing: one 1s cwd
+# confirmation sleep plus two 0.3s send settles, so even an already-settled
+# pane takes at least a full second.
+test_unset_knobs_keep_production_spacing() {
+  local rec id out status start end elapsed
+  id=settle-production-z4
+  rec=$(make_settle_case settle-production "$id" 0)
+  read_settle_record "$rec"
+
+  start=$(date +%s)
+  out=$(unset FM_SPAWN_CWD_POLL_INTERVAL FM_SPAWN_SEND_SETTLE; run_settle_spawn "$id")
+  status=$?
+  end=$(date +%s)
+  elapsed=$((end - start))
+  expect_code 0 "$status" "spawn should succeed with production timing"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id.meta" \
+    "meta did not record the worktree with production timing"
+  [ "$elapsed" -ge 1 ] || fail "spawn with unset knobs took ${elapsed}s - expected the production 1s confirmation spacing"
+  pass "unset wait knobs keep the production cwd poll and send settle spacing"
+}
+
+# A malformed knob is refused before any endpoint exists rather than handed to sleep.
+test_malformed_knobs_are_refused() {
+  local rec id out status knob value
+  id=settle-malformed-z5
+  rec=$(make_settle_case settle-malformed "$id" 0)
+  read_settle_record "$rec"
+
+  for knob in FM_SPAWN_CWD_POLL_INTERVAL FM_SPAWN_SEND_SETTLE; do
+    for value in abc -1 1.2.3 .; do
+      out=$(export "$knob=$value"; run_settle_spawn "$id")
+      status=$?
+      expect_code 2 "$status" "$knob=$value should be refused"
+      assert_contains "$out" "$knob must be a non-negative decimal" \
+        "$knob=$value refusal did not name the knob"
+    done
+  done
+  [ ! -f "$HOME_DIR/state/$id.meta" ] || fail "a refused knob still wrote task metadata"
+  pass "malformed wait knobs are refused before spawning"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_stale_read_rejected_at_fast_interval
+test_unset_knobs_keep_production_spacing
+test_malformed_knobs_are_refused
 
 echo "# all fm-spawn-worktree-settle tests passed"
