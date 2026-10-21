@@ -547,6 +547,9 @@ test_interrupt_and_exit_lock_before_task_state_resolution() {
       > "$case_dir/home/state/t1.meta.tmp"
     mv "$case_dir/home/state/t1.meta.tmp" "$case_dir/home/state/t1.meta"
     out=$(run_control "$case_dir" t1 "$verb"); rc=$?
+    # Stop the holder's sleep first: killing only the backgrounded function's
+    # subshell orphans it wherever the shell does not exec the last command.
+    pkill -TERM -P "$holder" 2>/dev/null || true
     kill "$holder" 2>/dev/null || true
     wait "$holder" 2>/dev/null || true
     expect_code 1 "$rc" "$verb should refuse a held lifecycle lock"
