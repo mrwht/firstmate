@@ -59,11 +59,10 @@ test_reserved_key_namespace_is_owned_by_its_library() {
   dir=$(make_case reserved-key)
   state="$dir/state"
   out="$dir/drain.out"
-  # `pending-reply-<id>` names a decision bin/fm-pending-reply-lib.sh raises and
-  # is the only writer that closes it. Every writer reaches this same stream - a
-  # local mate appends into it directly, and a remote mate's lines are mirrored
-  # into it verbatim - so another writer must not be able to take that key over
-  # or clear it just by naming it.
+  # `pending-reply-<id>` is a reserved decision-key namespace
+  # (bin/fm-classify-lib.sh FM_CLASSIFY_RESERVED_KEY_PREFIXES): only a line
+  # speaking that namespace's own vocabulary may open or close it, so another
+  # writer must not be able to take that key over or clear it just by naming it.
   printf 'blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it\n' > "$state/task9.status"
   printf 'blocked [key=pending-reply-abcdef0123456789]: shipping is blocked on infra\n' >> "$state/task9.status"
   printf 'resolved [key=pending-reply-abcdef0123456789]: all good now\n' >> "$state/task9.status"

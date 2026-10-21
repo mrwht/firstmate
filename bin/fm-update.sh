@@ -7,8 +7,7 @@
 # advance the target only when it is a clean fast-forward, otherwise skip and
 # report.
 #
-# The fast-forward mechanics live in bin/fm-ff-lib.sh (base_mode "origin" here);
-# the same library drives the local-HEAD secondmate sync used by fm-spawn.sh.
+# The fast-forward mechanics live in bin/fm-ff-lib.sh.
 #
 # It does NOT re-read AGENTS.md itself - that is an LLM action the skill
 # performs. The script's job is the safe git mechanics plus a parseable
@@ -37,7 +36,7 @@ fi
 # --- main firstmate repo ---------------------------------------------------
 
 reread_firstmate="no"
-ff_target "$FM_ROOT" "firstmate" origin no no
+ff_target "$FM_ROOT" "firstmate"
 if [ "$FF_STATUS" = "updated" ] && [ -n "$FF_INSTR" ]; then
   reread_firstmate="yes"
 fi

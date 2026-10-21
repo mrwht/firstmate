@@ -559,12 +559,7 @@ crew_dispatch_validate() {
 }
 
 startup_memory_budget_setup() {
-  # Primary bootstrap owns default publication. A secondmate is deliberately
-  # passive here because its setting must converge from the primary through the
-  # inherited-local-material contract rather than becoming a local authority.
-  if [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]; then
-    return 0
-  fi
+  # Bootstrap owns default publication.
   if ! fm_startup_memory_budget_materialize "$CONFIG"; then
     echo "STARTUP_MEMORY_BUDGET: invalid config/$FM_STARTUP_MEMORY_BUDGET_FILE - $FM_STARTUP_MEMORY_BUDGET_ERROR"
   fi

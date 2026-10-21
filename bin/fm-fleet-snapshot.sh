@@ -62,9 +62,6 @@ else
 fi
 case "$SNAPSHOT_EPOCH" in ''|*[!0-9]*) SNAPSHOT_EPOCH=$(date +%s) ;; esac
 
-# Cross-home bounds are explicit so one broken or unexpectedly large home cannot
-# hang or explode the parent snapshot.
-FM_SNAPSHOT_SECONDMATE_TIMEOUT=${FM_SNAPSHOT_SECONDMATE_TIMEOUT:-8}
 # Bounds on how many per-task units run concurrently. The loop is otherwise
 # embarrassingly parallel (no cross-unit state), so this exists only to cap
 # simultaneous no-mistakes/crew-state fan-out against the shared daemon and
@@ -87,7 +84,6 @@ validate_positive_bound() {  # <name> <value>
       ;;
   esac
 }
-validate_positive_bound FM_SNAPSHOT_SECONDMATE_TIMEOUT "$FM_SNAPSHOT_SECONDMATE_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_TASK_PARALLELISM "$FM_SNAPSHOT_TASK_PARALLELISM"
 
 # shellcheck source=bin/fm-backend.sh
@@ -96,9 +92,6 @@ validate_positive_bound FM_SNAPSHOT_TASK_PARALLELISM "$FM_SNAPSHOT_TASK_PARALLEL
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
-# shellcheck source=bin/fm-timeout-lib.sh
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
 
 usage() {
   cat <<'EOF'
@@ -390,7 +383,6 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 # never interact.
 task_json_one() {  # <meta> <id>
   local meta=$1 id=$2 kind harness mode yolo project worktree home projects backend target status_log report_path
-  local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
@@ -404,17 +396,8 @@ task_json_one() {  # <meta> <id>
   worktree=$(meta_value "$meta" worktree)
   home=$(meta_value "$meta" home)
   projects=$(meta_value "$meta" projects)
-  remote_host=$(meta_value "$meta" remote_host)
-  remote_root=$(meta_value "$meta" remote_root)
-  remote_home_present=null
-  if [ -n "$remote_host" ]; then
-    backend=$(meta_value "$meta" remote_backend)
-    [ -n "$backend" ] || backend=unknown
-    target=$(meta_value "$meta" remote_target)
-  else
-    backend=$(fm_backend_of_meta "$meta")
-    target=$(fm_backend_target_of_meta "$meta")
-  fi
+  backend=$(fm_backend_of_meta "$meta")
+  target=$(fm_backend_target_of_meta "$meta")
   status_log="$STATE/$id.status"
   report_path="$DATA/$id/report.md"
   pr=$(meta_value "$meta" pr)
@@ -467,37 +450,15 @@ task_json_one() {  # <meta> <id>
 
   endpoint_exists=null
   agent_alive=not_checked
-  if [ -n "$remote_host" ]; then
-    if remote_state=$(fm_run_timed "$FM_SNAPSHOT_SECONDMATE_TIMEOUT" \
-      "$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
-      remote_rc=0
+  if [ -n "$target" ]; then
+    if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
+      endpoint_exists=true
     else
-      remote_rc=$?
+      endpoint_exists=false
     fi
-    if [ "$remote_rc" -eq 0 ]; then
-      remote_home_present=true
-      remote_state=$(printf '%s\n' "$remote_state" | tail -1)
-      case "$remote_state" in
-        alive) endpoint_exists=true; agent_alive=alive ;;
-        dead) endpoint_exists=true; agent_alive=dead ;;
-        missing) endpoint_exists=false; agent_alive=dead ;;
-        *) endpoint_exists=null; agent_alive=unknown ;;
-      esac
-    else
-      endpoint_exists=null
-      agent_alive=unknown
-    fi
-  else
-    if [ -n "$target" ]; then
-      if fm_backend_target_exists "$backend" "$target" "fm-$id" >/dev/null 2>&1; then
-        endpoint_exists=true
-      else
-        endpoint_exists=false
-      fi
-    fi
-    if [ "$kind" = secondmate ] && [ -n "$target" ]; then
-      agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
-    fi
+  fi
+  if [ "$kind" = secondmate ] && [ -n "$target" ]; then
+    agent_alive=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf unknown)
   fi
 
   [ -f "$report_path" ] && report_present=1 || report_present=0
@@ -505,9 +466,7 @@ task_json_one() {  # <meta> <id>
   status_json=$event_json
   report_json=$(path_present_json "$report_path")
   if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
-  if [ -n "$home" ] && [ -n "$remote_host" ]; then
-    home_json=$(jq -n --arg path "$home" --argjson present "$remote_home_present" '{path:$path,present:$present}')
-  elif [ -n "$home" ]; then
+  if [ -n "$home" ]; then
     home_json=$(path_present_json "$home")
   else
     home_json=$(jq -n '{path:null,present:false}')
@@ -525,8 +484,6 @@ task_json_one() {  # <meta> <id>
     --arg projects "$projects" \
     --arg backend "$backend" \
     --arg target "$target" \
-    --arg remote_host "$remote_host" \
-    --arg remote_root "$remote_root" \
     --arg pr "$pr" \
     --arg pr_source "$pr_source" \
     --arg agent_alive "$agent_alive" \
@@ -551,7 +508,6 @@ task_json_one() {  # <meta> <id>
       yolo:($yolo // ""),
       project:($project // ""),
       backend:$backend,
-      remote:(if $remote_host == "" then null else {host:$remote_host,root:$remote_root} end),
       paths:{
         meta:$meta_path,
         status_log:$status_log,

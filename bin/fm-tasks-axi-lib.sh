@@ -1,25 +1,24 @@
 # shellcheck shell=bash
-# Shared tasks-axi backend selection and compatibility probe for bootstrap,
-# teardown, and secondmate backlog handoff.
+# Shared tasks-axi backend selection and compatibility probe for bootstrap
+# and teardown.
 # Usage: . bin/fm-tasks-axi-lib.sh
 #
 # Compatible means tasks-axi --version reports FM_TASKS_AXI_MIN or newer,
-# `tasks-axi update --help` exposes --archive-body for recoverable note rewrites,
-# and `tasks-axi mv --help` exposes [<id>...] for atomic multi-ID moves required
-# by secondmate handoffs.
+# and `tasks-axi update --help` exposes --archive-body for recoverable note
+# rewrites.
 # FM_TASKS_AXI_MIN follows the axi-family floor policy owned beside the floor
 # constants in bin/fm-bootstrap.sh.
-# The feature probes are a separate concern and stay as defense in depth for
-# stripped or forked builds that advertise a current version without those flags.
+# The feature probe is a separate concern and stays as defense in depth for
+# stripped or forked builds that advertise a current version without that flag.
 # `config/backlog-backend=manual` opts out of tasks-axi for routine firstmate
-# backlog mutations, but validated secondmate handoffs always use `tasks-axi mv`.
+# backlog mutations.
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
 #
 # This file is the single owner of FM_TASKS_AXI_MIN. bin/fm-bootstrap.sh turns a
 # failing check into the operator-facing MISSING diagnostic.
 #
-# COMPATIBILITY VERDICT REUSE. fm_tasks_axi_compatible costs three tasks-axi
+# COMPATIBILITY VERDICT REUSE. fm_tasks_axi_compatible costs two tasks-axi
 # subprocesses, and one session start needs the same verdict twice: once in
 # bin/fm-session-start.sh's backlog listing and once in the bin/fm-bootstrap.sh
 # child it runs. Two reuse layers collapse that to a single probe:
@@ -79,7 +78,7 @@ fm_tasks_axi_compatible_probe() {
   if [ "$major" -gt "$min_major" ] ||
     { [ "$major" -eq "$min_major" ] && [ "$minor" -gt "$min_minor" ]; } ||
     { [ "$major" -eq "$min_major" ] && [ "$minor" -eq "$min_minor" ] && [ "$patch" -ge "$min_patch" ]; }; then
-    fm_tasks_axi_update_has_archive_body && fm_tasks_axi_mv_has_multi_id
+    fm_tasks_axi_update_has_archive_body
     return $?
   fi
   return 1
@@ -90,16 +89,6 @@ fm_tasks_axi_update_has_archive_body() {
   command -v tasks-axi >/dev/null 2>&1 || return 1
   output=$(tasks-axi update --help 2>&1) || return 1
   printf '%s\n' "$output" | grep -F -- '--archive-body' >/dev/null
-}
-
-# Still required: bin/fm-backlog-receive.sh's atomic dependency-closed backlog
-# receipt calls `tasks-axi mv "$@"` with a variable-length id list and depends
-# on this probe through fm_tasks_axi_compatible.
-fm_tasks_axi_mv_has_multi_id() {
-  local output
-  command -v tasks-axi >/dev/null 2>&1 || return 1
-  output=$(tasks-axi mv --help 2>&1) || return 1
-  printf '%s\n' "$output" | grep -F -- '[<id>...]' >/dev/null
 }
 
 fm_backlog_backend_value() {

@@ -65,8 +65,8 @@
 # Announcement is adapter-owned through one more seam of the same kind. An
 # adapter that answers exit 0 to `bin/fm-procevent-<adapter>.sh self-announcing`
 # declares that every result its autohandle fully applies is announced through a
-# durable downstream channel of its own (for remote-reply, the mirrored parent
-# status append the watcher's signal scan detects). For such an adapter, `start`
+# durable downstream channel of its own (for example a status append the
+# watcher's signal scan detects). For such an adapter, `start`
 # runs autohandle FIRST and publishes a check wake only for what remains
 # unhandled afterwards, so a fully autohandled capture never produces a second
 # announcement and a byte-identical replay produces none at all. Every other

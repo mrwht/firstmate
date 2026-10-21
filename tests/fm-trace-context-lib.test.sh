@@ -240,14 +240,4 @@ for tok in brief prompt report status ; do
 done
 pass "the lib code never reads a brief, prompt, report, or status - it cannot leak content"
 
-# --- secondmate inheritance wires the nested chain ---------------------------
-
-# shellcheck source=/dev/null
-. "$ROOT/bin/fm-config-inherit-lib.sh"
-case " $FM_INHERITABLE_CONFIG " in
-  *" trace-context "*) : ;;
-  *) fail "config/trace-context must be in FM_INHERITABLE_CONFIG so secondmate homes stay traced" ;;
-esac
-pass "config/trace-context is inherited into secondmate homes, keeping the nested chain enabled end to end"
-
 echo "# fm-trace-context-lib.test.sh: all assertions passed"
