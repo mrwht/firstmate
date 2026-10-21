@@ -1028,11 +1028,9 @@ lab tab get "$FLAT_TAB_ID" >/dev/null 2>&1 \
   || fail "correction removed the seeded flat legacy secondmate-workspace tab"
 pass "real Herdr lab: legacy projection labels and flat legacy secondmate-workspace tabs are left unmigrated"
 
-# Teardown the remaining projected tasks by exact pane only.
-for TASK_ID in post-legacy alpha; do
-  teardown_task "$TASK_ID" "$HOME_DIR" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
-    || fail "teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
-done
+# Teardown the remaining projected task by exact pane only.
+teardown_task post-legacy "$HOME_DIR" > "$TMP_ROOT/td-post-legacy.out" 2> "$TMP_ROOT/td-post-legacy.err" \
+  || fail "teardown of post-legacy failed: $(cat "$TMP_ROOT/td-post-legacy.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "final teardown"
 pass "real Herdr lab: exact-pane teardowns restore captain focus without workspace close authority"
 
