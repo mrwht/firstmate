@@ -159,6 +159,11 @@
 # one W3C traceparent= carrier, the same value injected into the pane as
 # TRACEPARENT; the default-off path writes neither, leaving the generated meta
 # and launch environment unchanged.
+# Test-only wait tuning: FM_SPAWN_CWD_POLL_INTERVAL (seconds between treehouse
+# worktree cwd reads, default 1) and FM_SPAWN_SEND_SETTLE (seconds around the
+# launch-command send, default 0.3). The defaults are the production contract;
+# tests/lib.sh lowers them because fake backends answer instantly. Each must be a
+# non-negative decimal or the spawn refuses.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -200,6 +205,18 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+SPAWN_CWD_POLL_INTERVAL=${FM_SPAWN_CWD_POLL_INTERVAL:-1}
+SPAWN_SEND_SETTLE=${FM_SPAWN_SEND_SETTLE:-0.3}
+spawn_require_nonneg_decimal() {
+  case "$2" in
+    ''|.|*[!0-9.]*|*.*.*)
+      echo "error: $1 must be a non-negative decimal number of seconds, got: $2" >&2
+      exit 2
+      ;;
+  esac
+}
+spawn_require_nonneg_decimal FM_SPAWN_CWD_POLL_INTERVAL "$SPAWN_CWD_POLL_INTERVAL"
+spawn_require_nonneg_decimal FM_SPAWN_SEND_SETTLE "$SPAWN_SEND_SETTLE"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -1696,10 +1713,10 @@ elif [ "$BACKEND" != orca ]; then
     else
       candidate=""
     fi
-    sleep 1
+    sleep "$SPAWN_CWD_POLL_INTERVAL"
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: treehouse get did not enter a worktree within 60 polls ${SPAWN_CWD_POLL_INTERVAL}s apart; inspect window $T" >&2
     exit 1
   fi
 
@@ -2217,9 +2234,9 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
 fi
-sleep 0.3
+sleep "$SPAWN_SEND_SETTLE"
 spawn_send_literal "$T" "$LAUNCH"
-sleep 0.3
+sleep "$SPAWN_SEND_SETTLE"
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   HERDR_PROJECTION_ABORT_CLEANUP=0
   spawn_herdr_presentation_order_lock_release
