@@ -725,6 +725,88 @@ SH
   pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
 }
 
+# Write a leaking fixture (background sleep, exit 0) and a tidy fixture (waits
+# for its own child) at the given paths. The sleep duration is unique to this
+# test process so pgrep can prove the runner stopped exactly that process, and
+# is bounded so a broken runner cannot leave it running for long.
+write_leak_fixtures() {
+  local leaky=$1 tidy=$2 leak_secs=$3
+  cat >"$leaky" <<SH
+#!/usr/bin/env bash
+sleep $leak_secs &
+echo "ok - leaky fixture"
+exit 0
+SH
+  cat >"$tidy" <<'SH'
+#!/usr/bin/env bash
+sleep 0.2 &
+wait
+echo "ok - tidy fixture"
+SH
+  chmod +x "$leaky" "$tidy"
+}
+
+# Assert one leak run: the leaky script is reported, failed, and stopped; the
+# tidy one passes with no leak line.
+assert_leak_run() {
+  local label=$1 out=$2 rc=$3 leaky=$4 tidy=$5 leftover=$6
+  [ "$rc" -ne 0 ] || fail "$label: a leaking script must fail the run"
+  grep -Eq "^FM_TEST_LEAK $leaky pids=[0-9]+(,[0-9]+)* commands=sleep\$" "$out" \
+    || fail "$label: expected FM_TEST_LEAK for $leaky: $(grep '^FM_TEST_LEAK' "$out")"
+  grep -Eq "^FM_TEST_END .+ $leaky exit=1 " "$out" \
+    || fail "$label: leaking script must end exit=1: $(grep '^FM_TEST_END' "$out")"
+  grep -Eq "^FM_TEST_END .+ $tidy exit=0 " "$out" \
+    || fail "$label: tidy script must pass: $(grep '^FM_TEST_END' "$out")"
+  ! grep -q "^FM_TEST_LEAK $tidy " "$out" \
+    || fail "$label: a script that waits for its child must not report a leak"
+  grep -q 'FM_TEST_SUMMARY total=2 failed=1' "$out" \
+    || fail "$label: leak must count in failed: $(grep FM_TEST_SUMMARY "$out")"
+  [ -z "$leftover" ] \
+    || fail "$label: leaked fixture process still running after the run: $leftover"
+}
+
+test_leaked_children_are_reported_reaped_and_failed() {
+  local tmp leaky tidy leak_secs rc leftover
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-leak.XXXXXX")
+  leaky="$tmp/leaky.test.sh"
+  tidy="$tmp/tidy.test.sh"
+  leak_secs="300.$$1"
+  write_leak_fixtures "$leaky" "$tidy" "$leak_secs"
+  set +e
+  "$RUNNER" "$leaky" "$tidy" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  # Sample before the safety-net pkill so the assertion sees the runner's work.
+  leftover=$(pgrep -f "sleep $leak_secs" || true)
+  pkill -f "sleep $leak_secs" 2>/dev/null || true
+  assert_leak_run serial "$tmp/out" "$rc" "$leaky" "$tidy" "$leftover"
+  rm -rf "$tmp"
+  pass "serial run reports, stops, and fails a script that leaks a child"
+}
+
+test_jobs_leaked_children_are_reported_reaped_and_failed() {
+  local tmp repo runner a b leak_secs rc leftover
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-leak.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
+  leak_secs="300.$$2"
+  mkdir -p "$repo/bin" "$repo/tests"
+  cp "$RUNNER" "$runner"
+  chmod +x "$runner"
+  write_leak_fixtures "$repo/$a" "$repo/$b" "$leak_secs"
+  set +e
+  "$runner" --jobs 2 "$a" "$b" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  leftover=$(pgrep -f "sleep $leak_secs" || true)
+  pkill -f "sleep $leak_secs" 2>/dev/null || true
+  assert_leak_run jobs "$tmp/out" "$rc" "$a" "$b" "$leftover"
+  rm -rf "$tmp"
+  pass "--jobs run reports, stops, and fails a script that leaks a child"
+}
+
 test_aggregate_json() {
   local tmp a b
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-aggjson.XXXXXX")
@@ -786,4 +868,6 @@ test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
+test_leaked_children_are_reported_reaped_and_failed
+test_jobs_leaked_children_are_reported_reaped_and_failed
 test_aggregate_json
