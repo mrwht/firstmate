@@ -48,8 +48,24 @@
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
 #
+# Run environment (stdout), so load-induced failures are diagnosable from the
+# log. Not printed by --list, --list-families, --list-lanes, --check-coverage,
+# --aggregate-json, or an empty selection. Any field a missing or failing tool
+# cannot supply prints as unknown and never fails the run:
+#   FM_TEST_ENV <iso8601> phase=start load=<1m,5m,15m> ncpu=<n> sched_pri=<n> stray_yes=<n>
+#                         before the first FM_TEST_BEGIN; sched_pri is
+#                         `ps -o pri=` of the runner, stray_yes counts `yes`
+#                         processes left behind by an unbounded load repro
+#   FM_TEST_WARNING high load <load> on <ncpu> CPUs; timing-sensitive tests may fail for environmental reasons
+#                         after the start line, only when the 1m load exceeds
+#                         twice the CPU count; a warning, never a failure
+#
 # After all scripts (stdout):
 #   FM_TEST_SUMMARY total=<n> failed=<n> skipped_gate=<n> duration_ms=<n>
+#   FM_TEST_ENV <iso8601> phase=end ...   same fields as phase=start
+#   FM_TEST_ENV_TOP pcpu=<n> pid=<n> comm=<basename>
+#                         up to 5 lines, busiest processes first, only when
+#                         failed > 0
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #   FM_TEST_HINT <text>   one line, only when failed > 0, pointing at the
@@ -128,6 +144,92 @@ now_ms() {
     # Second precision only when python3 is unavailable.
     echo $(($(date +%s) * 1000))
   fi
+}
+
+# 1m,5m,15m load averages from uptime, which prints "load averages:" on macOS
+# and "load average:" on Linux. LC_ALL=C keeps the decimal separator a dot.
+env_load() {
+  local raw a b c v rest
+  raw=$(LC_ALL=C uptime 2>/dev/null) || raw=
+  case "$raw" in
+    *'load average'*) ;;
+    *) echo unknown; return 0 ;;
+  esac
+  raw=${raw##*load average}
+  raw=${raw#s}
+  raw=${raw#:}
+  read -r a b c rest <<<"${raw//,/ }" || true
+  for v in "$a" "$b" "$c"; do
+    printf '%s\n' "$v" | grep -Eq '^[0-9]+([.][0-9]+)?$' || { echo unknown; return 0; }
+  done
+  printf '%s,%s,%s\n' "$a" "$b" "$c"
+}
+
+env_ncpu() {
+  local n
+  n=$(getconf _NPROCESSORS_ONLN 2>/dev/null) \
+    || n=$(nproc 2>/dev/null) \
+    || n=$(sysctl -n hw.ncpu 2>/dev/null) \
+    || n=
+  case "$n" in
+    ''|*[!0-9]*) echo unknown ;;
+    *) printf '%s\n' "$n" ;;
+  esac
+}
+
+env_sched_pri() {
+  local p
+  p=$(ps -o pri= -p $$ 2>/dev/null | tr -d ' ') || p=
+  printf '%s\n' "$p" | grep -Eq '^-?[0-9]+$' && { printf '%s\n' "$p"; return 0; }
+  echo unknown
+}
+
+env_stray_yes() {
+  local out rc=0
+  out=$(pgrep -x yes 2>/dev/null) || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$out" | grep -c . ;;
+    1) echo 0 ;;
+    *) echo unknown ;;
+  esac
+}
+
+print_run_env() {
+  local phase=$1 load ncpu
+  load=$(env_load)
+  ncpu=$(env_ncpu)
+  printf 'FM_TEST_ENV %s phase=%s load=%s ncpu=%s sched_pri=%s stray_yes=%s\n' \
+    "$(now_iso)" "$phase" "$load" "$ncpu" "$(env_sched_pri)" "$(env_stray_yes)"
+  if [ "$phase" = start ] && [ "$load" != unknown ] && [ "$ncpu" != unknown ] \
+    && awk -v l="${load%%,*}" -v n="$ncpu" 'BEGIN { exit !(l > 2 * n) }'; then
+    printf 'FM_TEST_WARNING high load %s on %s CPUs; timing-sensitive tests may fail for environmental reasons\n' \
+      "${load%%,*}" "$ncpu"
+  fi
+}
+
+# Up to five busiest processes, so a loaded machine is visible in a failing log.
+print_top_processes() {
+  local listing
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    listing=$(ps -Ao pcpu,pid,comm -r 2>/dev/null) || listing=
+  else
+    listing=$(ps -eo pcpu,pid,comm --sort=-pcpu 2>/dev/null) || listing=
+  fi
+  [ -n "$listing" ] || return 0
+  printf '%s\n' "$listing" | awk '
+    NR == 1 { next }
+    shown >= 5 { exit }
+    {
+      pcpu = $1; pid = $2
+      $1 = ""; $2 = ""
+      comm = $0
+      sub(/^[ \t]+/, "", comm)
+      n = split(comm, parts, "/")
+      if (n > 0 && parts[n] != "") comm = parts[n]
+      printf "FM_TEST_ENV_TOP pcpu=%s pid=%s comm=%s\n", pcpu, pid, comm
+      shown++
+    }
+  ' || true
 }
 
 # Primary family for one tests/*.test.sh basename. Unmapped scripts are
@@ -1438,6 +1540,8 @@ FAILED=0
 SKIPPED_GATE=0
 AGG_RC=0
 
+print_run_env start
+
 # Family accumulators as TSV lines updated in-memory via temp files.
 # family -> count, duration_ms, failed
 family_bump() {
@@ -1656,6 +1760,10 @@ fi
 
 printf 'FM_TEST_SUMMARY total=%s failed=%s skipped_gate=%s duration_ms=%s\n' \
   "$TOTAL" "$FAILED" "$SKIPPED_GATE" "$RUN_DURATION"
+print_run_env end
+if [ "$FAILED" -gt 0 ]; then
+  print_top_processes
+fi
 
 # Gate agents never read AGENTS.md, so the runner's own output is the one place
 # they always see how to reproduce a load-sensitive failure safely.
