@@ -258,6 +258,96 @@ assert "family" in doc["scripts"][0]
   pass "timing markers and JSON artifact are valid"
 }
 
+test_run_env_banner() {
+  local tmp out start_line end_line line env_re
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-env.XXXXXX")
+  cat >"$tmp/ok.test.sh" <<'SH'
+#!/usr/bin/env bash
+echo "ok - fixture"
+SH
+  chmod +x "$tmp/ok.test.sh"
+  out="$tmp/out.txt"
+  "$RUNNER" "$tmp/ok.test.sh" >"$out" 2>"$tmp/err.txt" \
+    || { rm -rf "$tmp"; fail "runner should pass on a green fixture"; }
+  env_re='^FM_TEST_ENV [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z phase=(start|end) load=([0-9.]+,[0-9.]+,[0-9.]+|unknown) ncpu=([0-9]+|unknown) sched_pri=(-?[0-9]+|unknown) stray_yes=([0-9]+|unknown)$'
+  [ "$(grep -c '^FM_TEST_ENV ' "$out")" -eq 2 ] \
+    || fail "expected exactly two FM_TEST_ENV lines: $(grep '^FM_TEST_ENV' "$out")"
+  while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -Eq "$env_re" || fail "FM_TEST_ENV line missing keys: $line"
+  done < <(grep '^FM_TEST_ENV ' "$out")
+  start_line=$(grep -n '^FM_TEST_ENV .* phase=start ' "$out" | cut -d: -f1)
+  end_line=$(grep -n '^FM_TEST_ENV .* phase=end ' "$out" | cut -d: -f1)
+  [ -n "$start_line" ] && [ -n "$end_line" ] || fail "expected phase=start and phase=end lines"
+  [ "$start_line" -lt "$(grep -n '^FM_TEST_BEGIN ' "$out" | head -1 | cut -d: -f1)" ] \
+    || fail "phase=start must precede the first FM_TEST_BEGIN"
+  [ "$end_line" -eq $(($(grep -n '^FM_TEST_SUMMARY ' "$out" | cut -d: -f1) + 1)) ] \
+    || fail "phase=end must directly follow FM_TEST_SUMMARY"
+  ! grep -q '^FM_TEST_ENV_TOP ' "$out" || fail "a green run must not print FM_TEST_ENV_TOP"
+
+  for args in "--list --all" "--list-families" "--list-lanes"; do
+    # shellcheck disable=SC2086 # deliberate word split of the flag set
+    ! "$RUNNER" $args 2>/dev/null | grep -q '^FM_TEST_ENV' \
+      || fail "$args must not print FM_TEST_ENV"
+  done
+  rm -rf "$tmp"
+  pass "run env banner brackets the run with every key"
+}
+
+test_run_env_top_only_on_failure() {
+  local tmp top_n
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-envtop.XXXXXX")
+  printf '#!/usr/bin/env bash\necho "not ok - fixture"\nexit 1\n' >"$tmp/fail.test.sh"
+  chmod +x "$tmp/fail.test.sh"
+  "$RUNNER" "$tmp/fail.test.sh" >"$tmp/out.txt" 2>"$tmp/err.txt" \
+    && { rm -rf "$tmp"; fail "runner should fail on a failing fixture"; }
+  top_n=$(grep -c '^FM_TEST_ENV_TOP ' "$tmp/out.txt" || true)
+  [ "$top_n" -ge 1 ] && [ "$top_n" -le 5 ] \
+    || fail "failing run should print 1-5 FM_TEST_ENV_TOP lines, got $top_n"
+  grep '^FM_TEST_ENV_TOP ' "$tmp/out.txt" | grep -Evq '^FM_TEST_ENV_TOP pcpu=[0-9.]+ pid=[0-9]+ comm=[^/]+$' \
+    && fail "malformed FM_TEST_ENV_TOP line: $(grep '^FM_TEST_ENV_TOP' "$tmp/out.txt")"
+  rm -rf "$tmp"
+  pass "FM_TEST_ENV_TOP appears only on a failing run"
+}
+
+test_run_env_high_load_warning_and_degrade() {
+  local tmp rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-envload.XXXXXX")
+  mkdir -p "$tmp/high" "$tmp/broken" "$tmp/linux"
+  printf '#!/usr/bin/env bash\necho " 16:31:28 up 3 days,  2:01,  1 user,  load average: 0.52, 0.58, 0.59"\n' >"$tmp/linux/uptime"
+  printf '#!/usr/bin/env bash\necho " 10:00  up 1 day, 2 users, load averages: 9999.50 9000.00 8000.00"\n' >"$tmp/high/uptime"
+  printf '#!/usr/bin/env bash\necho "uptime: unavailable" >&2\nexit 1\n' >"$tmp/broken/uptime"
+  printf '#!/usr/bin/env bash\necho "ok - fixture"\n' >"$tmp/ok.test.sh"
+  chmod +x "$tmp/high/uptime" "$tmp/broken/uptime" "$tmp/linux/uptime" "$tmp/ok.test.sh"
+
+  set +e
+  PATH="$tmp/high:$PATH" "$RUNNER" "$tmp/ok.test.sh" >"$tmp/high.out" 2>"$tmp/high.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "high-load warning must not change a green exit code, got $rc"; }
+  grep -Eq '^FM_TEST_ENV .* phase=start load=9999.50,9000.00,8000.00 ncpu=[0-9]+ ' "$tmp/high.out" \
+    || fail "stubbed load not reported: $(grep '^FM_TEST_ENV' "$tmp/high.out")"
+  grep -Eq '^FM_TEST_WARNING high load 9999.50 on [0-9]+ CPUs; timing-sensitive tests may fail for environmental reasons$' "$tmp/high.out" \
+    || fail "expected high-load warning: $(grep '^FM_TEST_WARNING' "$tmp/high.out")"
+  [ "$(grep -c '^FM_TEST_WARNING ' "$tmp/high.out")" -eq 1 ] \
+    || fail "high-load warning must print once, at start"
+
+  PATH="$tmp/linux:$PATH" "$RUNNER" "$tmp/ok.test.sh" >"$tmp/linux.out" 2>"$tmp/linux.err" \
+    || { rm -rf "$tmp"; fail "runner should pass with Linux-format uptime"; }
+  grep -Eq '^FM_TEST_ENV .* phase=start load=0.52,0.58,0.59 ' "$tmp/linux.out" \
+    || fail "Linux uptime format not parsed: $(grep '^FM_TEST_ENV' "$tmp/linux.out")"
+
+  set +e
+  PATH="$tmp/broken:$PATH" "$RUNNER" "$tmp/ok.test.sh" >"$tmp/broken.out" 2>"$tmp/broken.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "a failing uptime must not fail the run, got $rc"; }
+  grep -Eq '^FM_TEST_ENV .* phase=start load=unknown ' "$tmp/broken.out" \
+    || fail "failing uptime should degrade load to unknown: $(grep '^FM_TEST_ENV' "$tmp/broken.out")"
+  ! grep -q '^FM_TEST_WARNING ' "$tmp/broken.out" || fail "unknown load must not warn"
+  rm -rf "$tmp"
+  pass "load parses macOS and Linux uptime; high-load warning and missing-tool degrade keep the exit code"
+}
+
 test_aggregate_exit_behavior() {
   local tmp pass_f fail_f rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-agg.XXXXXX")
@@ -684,6 +774,9 @@ test_changed_file_selection_is_conservative
 test_changed_dependency_selection_and_unmapped_failure
 test_empty_selection_emits_summary
 test_timing_markers_and_json
+test_run_env_banner
+test_run_env_top_only_on_failure
+test_run_env_high_load_warning_and_degrade
 test_aggregate_exit_behavior
 test_gate_skip_accounting
 test_fail_on_gate_skip_token
