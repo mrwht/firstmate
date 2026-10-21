@@ -27,6 +27,15 @@ export FAKE_CLAUDE
 # "$FAKE_CLAUDE" -c that runs the hook therefore ends with a later command
 # (exit $?, or at least a trailing newline) to keep the harness as its parent.
 
+# Stop a backgrounded fake-harness owner and the sleep it runs. Killing only the
+# harness would orphan its sleep child, which then outlives this test.
+stop_fake_harness() {
+  local pid=$1
+  pkill -TERM -P "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
 # Copy the hook and its sourced dependencies into a fixture checkout.
 install_autoarm_scripts() {
   local dir=$1
@@ -358,8 +367,7 @@ test_sessionstart_inert_in_read_only_session() {
       "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh" --hook-timeout 604800
       exit $?' 2>&1); status=$?
   elapsed=$(( $(date +%s) - started ))
-  kill "$other" 2>/dev/null || true
-  wait "$other" 2>/dev/null || true
+  stop_fake_harness "$other"
   expect_code 0 "$status" "a lock-refused read-only session must not arm at session open"
   [ "$elapsed" -lt 10 ] || fail "a live competing owner must end the session-open wait at once, took ${elapsed}s"
   [ ! -e "$dir/state/arm-ran" ] || fail "read-only session open armed"
@@ -541,8 +549,7 @@ test_inert_when_lock_held_by_other_harness() {
   out=$(printf '%s\n' '{"session_id":"s","hook_event_name":"Stop"}' | FM_HOME="$dir" "$FAKE_CLAUDE" -c '"$FM_HOME/bin/fm-claude-stop-autoarm.sh"
       exit $?' 2>&1); status=$?
   owner_after=$(cat "$dir/state/.lock")
-  kill "$other" 2>/dev/null || true
-  wait "$other" 2>/dev/null || true
+  stop_fake_harness "$other"
   expect_code 0 "$status" "hook must stay inert when another live harness holds the session lock"
   [ "$owner_after" = "$other" ] || fail "hook replaced another live harness owner: expected $other, got $owner_after"
   [ ! -e "$dir/state/arm-ran" ] || fail "hook armed while another session owned the lock"
