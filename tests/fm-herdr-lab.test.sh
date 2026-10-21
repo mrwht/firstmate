@@ -44,7 +44,12 @@ case "$1 ${2:-}" in
     ;;
   "server --session")
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
-      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
+      # Like a real server, stop the startup delay on TERM instead of orphaning it.
+      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY" &
+      delay_pid=$!
+      trap 'kill "$delay_pid" 2>/dev/null; exit 143' TERM
+      wait "$delay_pid"
+      trap - TERM
     fi
     printf '%s\n' running > "$state/$session"
     ;;
