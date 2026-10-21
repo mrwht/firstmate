@@ -47,6 +47,19 @@
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
+#   FM_TEST_LEAK <script> pids=<comma list> commands=<first 3 command names>
+#                         before FM_TEST_END, only when the script left
+#                         processes running; the runner then stops them and
+#                         fails the script (exit=1)
+#
+# Leak reaping: every script runs with stdin from /dev/null as the leader of its
+# own process group (perl starts it, since macOS bash has no setsid). A process
+# a test starts and abandons keeps that group id even after it is reparented,
+# so once the script exits, any live member of the group is a leak: the runner
+# reports it, sends the group TERM, waits up to 2s, then sends KILL. An
+# interrupted run (INT, TERM, HUP) stops every test group still running.
+# Limit: a process that starts its own session or process group (setsid,
+# daemonizing servers such as tmux) is outside this net and is not reported.
 #
 # Run environment (stdout), so load-induced failures are diagnosable from the
 # log. Not printed by --list, --list-families, --list-lanes, --check-coverage,
@@ -230,6 +243,117 @@ print_top_processes() {
       shown++
     }
   ' || true
+}
+
+# Launcher that runs one test script as the leader of its own process group.
+# Bash has no setsid on macOS, so perl forks the test into a fresh group,
+# records that group id in the file named by its first argument, and stays in
+# the runner's group as a small supervisor. Staying behind is what keeps an
+# interrupt working: a terminal Ctrl-C reaches only the foreground group, so
+# the supervisor forwards INT, TERM, and HUP to the test's group, then exits
+# with the test's status (128+signal when the test died of a signal). The test
+# gets default INT and QUIT handling even under --jobs, where bash would
+# otherwise start background workers with both ignored.
+# shellcheck disable=SC2016
+TEST_GROUP_LAUNCHER='
+  my $pgid_file = shift;
+  my $pid = fork;
+  defined $pid or die "fm-test-run: fork: $!\n";
+  if ($pid == 0) {
+    $SIG{$_} = "DEFAULT" for qw(INT QUIT);
+    setpgrp(0, 0) or die "fm-test-run: setpgrp: $!\n";
+    exec @ARGV or die "fm-test-run: exec $ARGV[0]: $!\n";
+  }
+  setpgrp($pid, $pid);
+  for my $sig (qw(INT TERM HUP)) {
+    $SIG{$sig} = sub { kill $sig, -$pid };
+  }
+  open(my $fh, ">", $pgid_file) or die "fm-test-run: $pgid_file: $!\n";
+  print $fh "$pid\n";
+  close $fh;
+  my $r;
+  do { $r = waitpid($pid, 0) } until $r == $pid || ($r == -1 && !$!{EINTR});
+  exit 1 if $r != $pid;
+  exit(128 + ($? & 127)) if $? & 127;
+  exit($? >> 8);
+'
+
+# Run one test script with stdin from /dev/null as its own process-group
+# leader. Stdin is detached because a background group that reads the terminal
+# would stop on SIGTTIN and hang the run.
+run_test_in_own_group() {
+  local pgid_file=$1 script=$2
+  perl -e "$TEST_GROUP_LAUNCHER" "$pgid_file" bash "$script" </dev/null
+}
+
+# Live members of one process group as "<pid>\t<command basename>" lines.
+# Zombies are excluded: they already exited and only await reaping by init.
+test_group_members() {
+  local pgid=$1
+  ps -Ao pid=,pgid=,stat=,comm= 2>/dev/null | awk -v g="$pgid" '
+    $2 == g && $3 !~ /^Z/ {
+      pid = $1
+      $1 = ""; $2 = ""; $3 = ""
+      comm = $0
+      sub(/^[ \t]+/, "", comm)
+      n = split(comm, parts, "/")
+      if (n > 0 && parts[n] != "") comm = parts[n]
+      printf "%s\t%s\n", pid, comm
+    }
+  ' || true
+}
+
+# TERM a process group, wait up to 2s for it to empty, then KILL what remains.
+terminate_test_group() {
+  local pgid=$1 i=0
+  kill -TERM -- "-$pgid" 2>/dev/null || return 0
+  kill -CONT -- "-$pgid" 2>/dev/null || true
+  while [ "$i" -lt 20 ] && [ -n "$(test_group_members "$pgid")" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$(test_group_members "$pgid")" ] || return 0
+  kill -KILL -- "-$pgid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ] && [ -n "$(test_group_members "$pgid")" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# After a test script exits, report and stop anything it left running in its
+# process group. Prints one FM_TEST_LEAK line and returns 1 when it leaked.
+reap_test_group() {
+  local script=$1 pgid_file=$2 pgid members pids commands
+  pgid=$(cat "$pgid_file" 2>/dev/null) || pgid=
+  case "$pgid" in
+    ''|*[!0-9]*) rm -f "$pgid_file"; return 0 ;;
+  esac
+  members=$(test_group_members "$pgid")
+  if [ -z "$members" ]; then
+    rm -f "$pgid_file"
+    return 0
+  fi
+  pids=$(printf '%s\n' "$members" | cut -f1 | paste -sd, -)
+  commands=$(printf '%s\n' "$members" | cut -f2 | head -n 3 | paste -sd, -)
+  printf 'FM_TEST_LEAK %s pids=%s commands=%s\n' "$script" "$pids" "$commands"
+  terminate_test_group "$pgid"
+  rm -f "$pgid_file"
+  return 1
+}
+
+# Interrupted or aborted run: stop every test group still recorded as live.
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
+terminate_recorded_test_groups() {
+  local f pgid
+  for f in "$RUN_TMP"/groups/*; do
+    [ -f "$f" ] || continue
+    pgid=$(cat "$f" 2>/dev/null) || continue
+    case "$pgid" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    terminate_test_group "$pgid"
+  done
 }
 
 # Primary family for one tests/*.test.sh basename. Unmapped scripts are
@@ -1530,7 +1654,13 @@ RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"
 : >"$RECORDS"
-trap 'rm -rf "$RUN_TMP"' EXIT
+mkdir -p "$RUN_TMP/groups"
+# Each live test's process-group id is recorded under groups/ until it is
+# reaped, so an interrupted or aborted run still stops every test it started.
+trap 'terminate_recorded_test_groups; rm -rf "$RUN_TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)
@@ -1609,11 +1739,12 @@ record_script_result() {
 
 run_one_serial() {
   local script=$1
-  local base family expected out begin_iso begin_ms end_ms end_iso duration rc
+  local base family expected out pgid_file begin_iso begin_ms end_ms end_iso duration rc
   base=$(basename "$script")
   family=$(family_for_basename "$base")
   expected=$(expected_gate_skip_for_family "$family")
   out="$RUN_TMP/out.$TOTAL"
+  pgid_file="$RUN_TMP/groups/s$TOTAL"
   begin_iso=$(now_iso)
   begin_ms=$(now_ms)
 
@@ -1622,9 +1753,20 @@ run_one_serial() {
 
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
-  # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
-  rc=${PIPESTATUS[0]}
+  # tee stays in the runner's process group, outside the test's own group, and
+  # its exit is ignored for aggregate. Reaping happens inside the first stage:
+  # a leaked child inherits the pipe, so tee would never see end of input while
+  # it is still running. The pipeline runs in the background so an INT, TERM,
+  # or HUP trap fires during `wait` instead of waiting for the test to finish;
+  # the stage writes the test's status before closing the pipe tee waits on.
+  (
+    run_test_in_own_group "$pgid_file" "$script"
+    rc=$?
+    reap_test_group "$script" "$pgid_file" || rc=1
+    printf '%s\n' "$rc" >"$out.rc"
+  ) 2>&1 | tee "$out" &
+  wait "$!"
+  rc=$(cat "$out.rc" 2>/dev/null) || rc=
   set -e
   : "${rc:=1}"
 
@@ -1730,8 +1872,9 @@ else
         FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
+      run_test_in_own_group "$RUN_TMP/groups/w$worker_n" "$script" >"$work/output" 2>&1
       rc=$?
+      reap_test_group "$script" "$RUN_TMP/groups/w$worker_n" >>"$work/output" || rc=1
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))
       if [ "$duration" -lt 0 ]; then

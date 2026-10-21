@@ -95,7 +95,13 @@ prime_seen() { # <state> <status>
   printf '%s' "$sig" > "$state/.seen-$(basename "$status" | tr '.' '_')"
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Stop a background helper and its children: killing only a bash -c holder
+# would orphan the sleep it runs, which then outlives this test.
+reap() {
+  pkill -TERM -P "$1" 2>/dev/null || true
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
 
 # The main retains a terminal presentation receipt until the corresponding wake
 # is handled and acknowledged.

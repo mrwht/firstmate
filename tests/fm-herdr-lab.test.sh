@@ -44,7 +44,12 @@ case "$1 ${2:-}" in
     ;;
   "server --session")
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
-      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY"
+      # Like a real server, stop the startup delay on TERM instead of orphaning it.
+      "$FM_FAKE_HERDR_REAL_SLEEP" "$FM_FAKE_HERDR_SERVER_DELAY" &
+      delay_pid=$!
+      trap 'kill "$delay_pid" 2>/dev/null; exit 143' TERM
+      wait "$delay_pid"
+      trap - TERM
     fi
     printf '%s\n' running > "$state/$session"
     ;;
@@ -222,6 +227,10 @@ SH
   FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_SERVER_DELAY=30 \
     run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "timed-out provision must fail"
+  if pgrep -f "server --session $name" >/dev/null 2>&1; then
+    pkill -f "server --session $name" 2>/dev/null || true
+    fail "timed-out provision left its lab server process running"
+  fi
   assert_present "$TRIPWIRES/$name.fleet-state.json" \
     "timed-out provision must retain its tripwire until teardown"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown after timed-out provision failed"
