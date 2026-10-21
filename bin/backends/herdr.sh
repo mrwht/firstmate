@@ -1028,7 +1028,7 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
     }
     mover=${FM_BACKEND_HERDR_WORKSPACE_MOVER:-$FM_BACKEND_HERDR_ROOT/bin/backends/herdr-workspace-move.py}
     before_order=$(printf '%s' "$list" | jq -c '[.result.workspaces[].workspace_id]' 2>/dev/null)
-    if response=$("$mover" "$socket" "$ws_id" "$len" 2>/dev/null); then
+    if response=$("$mover" "$socket" "$ws_id" "$len"); then
       move_status=0
     else
       move_status=$?
@@ -1082,7 +1082,7 @@ FMEOF
       ;;
   esac
   mover=${FM_BACKEND_HERDR_WORKSPACE_MOVER:-$FM_BACKEND_HERDR_ROOT/bin/backends/herdr-workspace-move.py}
-  if ! response=$("$mover" "$socket" "$ws" "$index" 2>/dev/null) \
+  if ! response=$("$mover" "$socket" "$ws" "$index") \
     || ! printf '%s' "$response" | jq -e --argjson expected "$order" --arg focused "$focused" '
       .result.type == "workspace_list"
       and ([.result.workspaces[].workspace_id] == $expected)
@@ -1380,7 +1380,7 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
     echo "warning: herdr presentation ordering could not capture exact active workspace and tab; leaving worker in Herdr's current order" >&2
     return 0
   }
-  if response=$("$mover" "$socket" "$created" "$desired" 2>/dev/null); then
+  if response=$("$mover" "$socket" "$created" "$desired"); then
     move_status=0
   else
     move_status=$?

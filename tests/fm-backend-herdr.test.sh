@@ -2172,6 +2172,62 @@ test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
   pass "herdr presentation labels: └ concise-task · p:<full-token> for primary and secondmate children"
 }
 
+# Real workspace mover against a one-shot fake Herdr socket server. The server
+# binds relative to its directory, so the socket's absolute path can exceed the
+# AF_UNIX sun_path limit the way a canonicalized home-manager ~/.config/herdr
+# session socket does.
+start_fake_move_server() {  # <socket-dir> <socket-name> <ready-file>
+  python3 -c '
+import os, socket, sys
+directory, name, ready = sys.argv[1:4]
+os.chdir(directory)
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(name)
+server.listen(1)
+open(ready, "w").close()
+server.settimeout(10)
+conn, _ = server.accept()
+conn.recv(65536)
+conn.sendall(b"{\"id\":\"fm-workspace-move\",\"result\":{\"type\":\"workspace_list\",\"workspaces\":[{\"workspace_id\":\"w2\",\"focused\":true},{\"workspace_id\":\"w1\",\"focused\":false}]}}\n")
+conn.close()
+' "$1" "$2" "$3" &
+}
+
+test_workspace_mover_connects_beyond_sun_path_limit() {
+  local dir sock_dir ready server_pid out status i
+  command -v python3 >/dev/null 2>&1 || { pass "herdr workspace mover long-path connect: skipped, python3 not found"; return 0; }
+  dir="$TMP_ROOT/mover-long-path"
+  sock_dir="$dir/home-manager-files/.config/herdr/sessions/fm-lab-fm-herdr-focus-fl-12345-67890-padding-for-length"
+  mkdir -p "$sock_dir"
+  [ "${#sock_dir}" -gt 110 ] || fail "long-path fixture is only ${#sock_dir} bytes; it must exceed every AF_UNIX sun_path limit"
+  ready="$dir/ready"
+  start_fake_move_server "$sock_dir" herdr.sock "$ready"
+  server_pid=$!
+  i=0
+  while [ ! -e "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+  [ -e "$ready" ] || { kill "$server_pid" 2>/dev/null; fail "fake move server did not start"; }
+  out=$("$ROOT/bin/backends/herdr-workspace-move.py" "$sock_dir/herdr.sock" w1 1 2>&1)
+  status=$?
+  wait "$server_pid" 2>/dev/null
+  [ "$status" -eq 0 ] || fail "workspace mover could not reach a socket whose absolute path exceeds sun_path (status $status): $out"
+  printf '%s' "$out" | jq -e '.result.type == "workspace_list"' >/dev/null \
+    || fail "workspace mover did not print the verified response: $out"
+  pass "herdr workspace mover reaches a session socket whose canonical absolute path exceeds the AF_UNIX limit"
+}
+
+test_workspace_mover_refuses_an_oversized_socket_name_loudly() {
+  local dir name out status
+  command -v python3 >/dev/null 2>&1 || { pass "herdr workspace mover oversized-name guard: skipped, python3 not found"; return 0; }
+  dir="$TMP_ROOT/mover-long-name"
+  mkdir -p "$dir"
+  name=$(printf 'n%.0s' $(seq 1 120)).sock
+  out=$("$ROOT/bin/backends/herdr-workspace-move.py" "$dir/$name" w1 1 2>&1 >/dev/null)
+  status=$?
+  [ "$status" -eq 2 ] || fail "oversized socket name must refuse with status 2, got $status"
+  assert_contains "$out" "AF_UNIX allows at most" "oversized socket name refusal must name the AF_UNIX limit"
+  pass "herdr workspace mover refuses a socket name that cannot fit sun_path with a message naming the limit"
+}
+
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order() {
   local dir log resp fb mover mover_log out status
   dir="$TMP_ROOT/projection-order"; mkdir -p "$dir/responses"
@@ -4347,6 +4403,8 @@ test_endpoint_confirmed_gone_gates_on_structured_presence
 test_kill_refuses_when_presentation_lock_is_unavailable
 test_projection_seeded_prune_refuses_active_tab
 test_projection_label_builder_uses_corner_and_strips_owner_prefixes
+test_workspace_mover_connects_beyond_sun_path_limit
+test_workspace_mover_refuses_an_oversized_socket_name_loudly
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order
 test_projection_order_secondmate_parent_block
 test_projection_order_foreign_legacy_child_is_read_only

@@ -14,14 +14,22 @@ Wire protocol verified against Herdr 0.7.4, protocol 16:
              {"type":"workspace_list","workspaces":[...]}}\n
 Usage: herdr-workspace-move.py <socket_path> <workspace_id> <insert_index>
 
+The socket is reached relative to its own directory, so a canonical path
+that resolves through long symlinked parents (for example a home-manager
+~/.config/herdr) still connects even when the absolute spelling exceeds the
+platform's AF_UNIX sun_path limit. Only a socket file name that is itself too
+long for sun_path is refused, with a message naming the limit.
+
 Exit status:
   0  the server returned the matching workspace_list response;
-  2  arguments or socket connection were invalid;
+  2  arguments or socket connection were invalid, including a socket name
+     too long for AF_UNIX;
   3  the request could not be sent or its response could not be read;
   4  the response was malformed, mismatched, or reported an error.
 """
 
 import json
+import os
 import socket
 import sys
 import time
@@ -32,6 +40,22 @@ RESPONSE_TIMEOUT = 5.0
 RECV_CHUNK = 65536
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 REQUEST_ID = "fm-workspace-move"
+# sockaddr_un.sun_path size, including the terminating NUL.
+SUN_PATH_MAX = 108 if sys.platform.startswith("linux") else 104
+
+
+def _connect(sock, socket_path):
+    directory, name = os.path.split(socket_path)
+    name_bytes = len(os.fsencode(name))
+    if not name or name_bytes >= SUN_PATH_MAX:
+        sys.stderr.write(
+            "herdr-workspace-move: socket name %r is %d bytes; AF_UNIX allows"
+            " at most %d even when connecting relative to its directory\n"
+            % (name, name_bytes, SUN_PATH_MAX - 1)
+        )
+        raise OSError("socket name exceeds the AF_UNIX sun_path limit")
+    os.chdir(directory)
+    sock.connect(name)
 
 
 def _read_line(sock, deadline):
@@ -71,7 +95,7 @@ def main(argv):
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(CONNECT_TIMEOUT)
-        sock.connect(socket_path)
+        _connect(sock, socket_path)
     except OSError:
         return 2
 
