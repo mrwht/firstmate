@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # fm-test-run.sh - single owner of Firstmate's behavior-test runner, lane
-# composition for portable CI shards, local --jobs for the proven-isolated set,
+# composition for portable CI shards, local --jobs parallelism for the
+# proven-isolated part of any selection,
 # timing markers, and the complete-regression coverage guard.
 #
 # Selection modes (exactly one of: --all, --family, --changed, --lane,
@@ -37,12 +38,31 @@
 #                   "skip: <token>" (e.g. --fail-on-gate-skip 'herdr not found').
 #                   The required Herdr CI lane uses this so a missing pin cannot
 #                   silently pass as a gate skip.
-#   --jobs N        run the selected scripts with up to N concurrent workers.
-#                   Default is 1 (serial). N>1 is allowed only when every
-#                   selected script is in the proven-isolated set
-#                   (bin/fm-test-isolation-proof.sh --list). Cap is 8. Stateful
-#                   families never schedule under --jobs.
+#   --jobs N        run proven-isolated scripts with up to N concurrent workers.
+#                   Default is 1 (serial). Cap is 8. N>1 accepts any selection
+#                   and splits it in two phases: a parallel phase of the
+#                   selected scripts in the proven-isolated set
+#                   (bin/fm-test-isolation-proof.sh --list), then a serial phase
+#                   of everything else in selection order. No serial-phase
+#                   script starts while any parallel worker is alive, so
+#                   stateful scripts never share the machine with another test.
+#                   A portable-serial lane or shard with N>1 is refused: CI
+#                   shards that lane across runners and keeps each shard serial.
+#                   Each parallel worker gets a private mode-0700 TMPDIR and
+#                   XDG_STATE_HOME, XDG_DATA_HOME, XDG_CONFIG_HOME, and
+#                   XDG_CACHE_HOME under its worker root, plus a private
+#                   TMUX_TMPDIR from mktemp -d /tmp/fmx.XXXXXX (short, because
+#                   macOS caps AF_UNIX socket paths at 104 bytes). The worker
+#                   unsets FM_HOME, FM_*_OVERRIDE, FM_BACKEND, TMUX, TMUX_PANE,
+#                   and the HERDR_* session variables; HOME is unchanged. After
+#                   the script exits, every tmux server with a socket under its
+#                   TMUX_TMPDIR is killed and that directory removed, before the
+#                   worker counts as finished.
 #   -h, --help      print this header
+#
+# Phase markers (stdout), only when --jobs N>1, before each non-empty phase:
+#   FM_TEST_PHASE parallel jobs=<N> scripts=<n>
+#   FM_TEST_PHASE serial scripts=<n>
 #
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
@@ -1609,6 +1629,15 @@ if [ -n "$FAIL_ON_GATE_SKIP" ]; then
   SELECTION_DESC="${SELECTION_DESC};fail-on-gate-skip=$FAIL_ON_GATE_SKIP"
 fi
 if [ "$JOBS" -gt 1 ]; then
+  # CI's serial shard contract: a portable-serial lane runs one script at a
+  # time on its own runner, so it never takes a parallel phase.
+  if [ "$MODE" = lane ]; then
+    case "$LANE" in
+      portable-serial*)
+        die "--jobs $JOBS refused: lane $LANE is a portable serial lane and stays strictly serial (CI shards it across runners instead)"
+        ;;
+    esac
+  fi
   SELECTION_DESC="${SELECTION_DESC};jobs=$JOBS"
 fi
 
@@ -1641,23 +1670,56 @@ for s in "${SCRIPTS[@]}"; do
   [ -x "$s" ] || [ -r "$s" ] || die "test script not readable: $s"
 done
 
-# --jobs N>1 only for the proven-isolated set. Stateful families stay serial.
-if [ "$JOBS" -gt 1 ]; then
-  for s in "${SCRIPTS[@]}"; do
-    if ! is_proven_isolated_script "$s"; then
-      die "--jobs $JOBS refused: $s is not in the proven-isolated set (see bin/fm-test-isolation-proof.sh --list). Stateful families stay serial."
-    fi
-  done
-fi
+# --jobs N>1 runs only the proven-isolated scripts concurrently; everything else
+# (stateful families, unproven scripts) stays in the serial phase.
+PARALLEL_SCRIPTS=()
+SERIAL_SCRIPTS=()
+for s in "${SCRIPTS[@]}"; do
+  if [ "$JOBS" -gt 1 ] && is_proven_isolated_script "$s"; then
+    PARALLEL_SCRIPTS+=("$s")
+  else
+    SERIAL_SCRIPTS+=("$s")
+  fi
+done
 
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"
+# Every per-worker TMUX_TMPDIR, one per line, recorded by mktemp itself so an
+# interrupted run still stops its tmux servers and removes the directory.
+TMUX_ROOTS="$RUN_TMP/tmux-roots"
 : >"$RECORDS"
+: >"$TMUX_ROOTS"
 mkdir -p "$RUN_TMP/groups"
+
+# Stop every tmux server whose socket lives under one worker's private
+# TMUX_TMPDIR (the default server and any -L socket alike), then remove it.
+cleanup_worker_tmux_root() {
+  local root=$1 sock
+  case "$root" in
+    /tmp/fmx.*) ;;
+    *) return 0 ;;
+  esac
+  [ -d "$root" ] || return 0
+  for sock in "$root"/tmux-*/*; do
+    [ -S "$sock" ] || continue
+    tmux -S "$sock" kill-server >/dev/null 2>&1 || true
+  done
+  rm -rf "$root"
+}
+
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
+cleanup_recorded_tmux_roots() {
+  local root
+  [ -f "$TMUX_ROOTS" ] || return 0
+  while IFS= read -r root; do
+    cleanup_worker_tmux_root "$root"
+  done <"$TMUX_ROOTS"
+}
+
 # Each live test's process-group id is recorded under groups/ until it is
 # reaped, so an interrupted or aborted run still stops every test it started.
-trap 'terminate_recorded_test_groups; rm -rf "$RUN_TMP"' EXIT
+trap 'terminate_recorded_test_groups; cleanup_recorded_tmux_roots; rm -rf "$RUN_TMP"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
@@ -1779,118 +1841,148 @@ run_one_serial() {
   record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
 }
 
-if [ "$JOBS" -eq 1 ]; then
-  for script in "${SCRIPTS[@]}"; do
-    run_one_serial "$script"
-  done
-else
-  # Bounded concurrent execution for proven-isolated scripts only. Each worker
-  # gets a private mode-0700 TMPDIR so mktemp roots cannot collide. Retries are
-  # never used as a green strategy.
-  declare -a WORKER_PIDS=()
-  declare -a WORKER_IDX=()
-  declare -a WORKER_SCRIPTS=()
-  worker_n=0
-  active_workers=0
+# Bounded concurrent execution for the proven-isolated part of the selection.
+# Each worker gets a private mode-0700 TMPDIR, private XDG roots, and a short
+# private TMUX_TMPDIR, so mktemp roots, XDG state, and tmux servers cannot
+# collide. Retries are never used as a green strategy.
+declare -a WORKER_PIDS=()
+declare -a WORKER_IDX=()
+declare -a WORKER_SCRIPTS=()
+worker_n=0
+active_workers=0
 
-  wait_one_job_worker() {
-    local slot=$1 pid idx work script rc duration mode out end_iso
-    pid=${WORKER_PIDS[$slot]}
-    idx=${WORKER_IDX[$slot]}
-    script=${WORKER_SCRIPTS[$slot]}
-    unset 'WORKER_PIDS[slot]'
-    unset 'WORKER_IDX[slot]'
-    unset 'WORKER_SCRIPTS[slot]'
-    active_workers=$((active_workers - 1))
-    set +e
-    wait "$pid"
-    set -e
-    work="$RUN_TMP/w$idx"
-    rc=$(cat "$work/exit" 2>/dev/null || echo 1)
-    duration=$(cat "$work/duration_ms" 2>/dev/null || echo 0)
-    out="$work/output"
-    end_iso=$(now_iso)
-    # Replay captured output after the worker finishes so markers stay ordered.
-    if [ -s "$out" ]; then
-      cat "$out"
-    fi
-    mode=$(stat -c %a "$work" 2>/dev/null || stat -f %Lp "$work" 2>/dev/null || echo unknown)
-    case "$mode" in
-      700|0700) ;;
-      *)
-        log "isolation failure: worker root mode is $mode, expected 0700 ($work)"
-        rc=1
-        ;;
-    esac
-    record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
-  }
+wait_one_job_worker() {
+  local slot=$1 pid idx work script rc duration mode out end_iso
+  pid=${WORKER_PIDS[$slot]}
+  idx=${WORKER_IDX[$slot]}
+  script=${WORKER_SCRIPTS[$slot]}
+  unset 'WORKER_PIDS[slot]'
+  unset 'WORKER_IDX[slot]'
+  unset 'WORKER_SCRIPTS[slot]'
+  active_workers=$((active_workers - 1))
+  set +e
+  wait "$pid"
+  set -e
+  work="$RUN_TMP/w$idx"
+  rc=$(cat "$work/exit" 2>/dev/null || echo 1)
+  duration=$(cat "$work/duration_ms" 2>/dev/null || echo 0)
+  out="$work/output"
+  end_iso=$(now_iso)
+  # Replay captured output after the worker finishes so markers stay ordered.
+  if [ -s "$out" ]; then
+    cat "$out"
+  fi
+  mode=$(stat -c %a "$work" 2>/dev/null || stat -f %Lp "$work" 2>/dev/null || echo unknown)
+  case "$mode" in
+    700|0700) ;;
+    *)
+      log "isolation failure: worker root mode is $mode, expected 0700 ($work)"
+      rc=1
+      ;;
+  esac
+  record_script_result "$script" "$rc" "$duration" "$out" "$end_iso"
+}
 
-  worker_pid_is_running() {
-    local want=$1 running inventory="$RUN_TMP/running-pids"
-    # Keep `jobs` in this shell. A process substitution runs it in a subshell
-    # without this shell's job table on Bash 3.2/5.x, falsely reporting every
-    # worker complete and making the scheduler wait for the oldest PID.
-    jobs -r -p >"$inventory"
-    while IFS= read -r running; do
-      [ "$running" = "$want" ] && return 0
-    done <"$inventory"
-    return 1
-  }
+worker_pid_is_running() {
+  local want=$1 running inventory="$RUN_TMP/running-pids"
+  # Keep `jobs` in this shell. A process substitution runs it in a subshell
+  # without this shell's job table on Bash 3.2/5.x, falsely reporting every
+  # worker complete and making the scheduler wait for the oldest PID.
+  jobs -r -p >"$inventory"
+  while IFS= read -r running; do
+    [ "$running" = "$want" ] && return 0
+  done <"$inventory"
+  return 1
+}
 
-  wait_one_completed_job_worker() {
-    local slot work
-    while :; do
-      for slot in "${!WORKER_PIDS[@]}"; do
-        work="$RUN_TMP/w${WORKER_IDX[$slot]}"
-        if [ -f "$work/exit" ] || ! worker_pid_is_running "${WORKER_PIDS[$slot]}"; then
-          wait_one_job_worker "$slot"
-          return
-        fi
-      done
-      sleep 0.01
+wait_one_completed_job_worker() {
+  local slot work
+  while :; do
+    for slot in "${!WORKER_PIDS[@]}"; do
+      work="$RUN_TMP/w${WORKER_IDX[$slot]}"
+      if [ -f "$work/exit" ] || ! worker_pid_is_running "${WORKER_PIDS[$slot]}"; then
+        wait_one_job_worker "$slot"
+        return
+      fi
     done
-  }
+    sleep 0.01
+  done
+}
 
-  for script in "${SCRIPTS[@]}"; do
+start_job_worker() {
+  local script=$1 work base family expected tmux_root
+  worker_n=$((worker_n + 1))
+  work="$RUN_TMP/w$worker_n"
+  mkdir -p "$work/tmp" "$work/xdg/state" "$work/xdg/data" "$work/xdg/config" "$work/xdg/cache"
+  chmod 0700 "$work" "$work/tmp" || die "could not chmod 0700 worker root $work"
+  # A literal short /tmp root, never one under TMPDIR: macOS caps AF_UNIX socket
+  # paths at 104 bytes and tmux places -L sockets under TMUX_TMPDIR too.
+  # mktemp writes the path straight into the record so an interrupt between
+  # creating and recording the root cannot leak it.
+  mktemp -d /tmp/fmx.XXXXXX >>"$TMUX_ROOTS" || die "could not create a private tmux root under /tmp"
+  tmux_root=$(tail -n 1 "$TMUX_ROOTS")
+  chmod 0700 "$tmux_root" || die "could not chmod 0700 tmux root $tmux_root"
+  base=$(basename "$script")
+  family=$(family_for_basename "$base")
+  expected=$(expected_gate_skip_for_family "$family")
+  printf 'FM_TEST_BEGIN %s %s family=%s expected_gate_skip=%s\n' \
+    "$(now_iso)" "$script" "$family" "$expected"
+  (
+    set +e
+    export TMPDIR="$work/tmp"
+    export TMP="$work/tmp"
+    export TMUX_TMPDIR="$tmux_root"
+    export XDG_STATE_HOME="$work/xdg/state"
+    export XDG_DATA_HOME="$work/xdg/data"
+    export XDG_CONFIG_HOME="$work/xdg/config"
+    export XDG_CACHE_HOME="$work/xdg/cache"
+    unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+      FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
+      TMUX TMUX_PANE HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID \
+      HERDR_SOCKET_PATH HERDR_SESSION 2>/dev/null || true
+    cd "$ROOT" || exit 1
+    begin_ms=$(now_ms)
+    run_test_in_own_group "$RUN_TMP/groups/w$worker_n" "$script" >"$work/output" 2>&1
+    rc=$?
+    reap_test_group "$script" "$RUN_TMP/groups/w$worker_n" >>"$work/output" || rc=1
+    # Stop the worker's tmux servers before it reports finished, so a
+    # serial-phase script never overlaps one.
+    cleanup_worker_tmux_root "$tmux_root"
+    end_ms=$(now_ms)
+    duration=$((end_ms - begin_ms))
+    if [ "$duration" -lt 0 ]; then
+      duration=0
+    fi
+    printf '%s\n' "$duration" >"$work/duration_ms"
+    printf '%s\n' "$rc" >"$work/exit"
+    exit 0
+  ) &
+  WORKER_PIDS[worker_n]=$!
+  WORKER_IDX[worker_n]=$worker_n
+  WORKER_SCRIPTS[worker_n]=$script
+  active_workers=$((active_workers + 1))
+}
+
+if [ "${#PARALLEL_SCRIPTS[@]}" -gt 0 ]; then
+  printf 'FM_TEST_PHASE parallel jobs=%s scripts=%s\n' "$JOBS" "${#PARALLEL_SCRIPTS[@]}"
+  for script in "${PARALLEL_SCRIPTS[@]}"; do
     while [ "$active_workers" -ge "$JOBS" ]; do
       wait_one_completed_job_worker
     done
-    worker_n=$((worker_n + 1))
-    work="$RUN_TMP/w$worker_n"
-    mkdir -p "$work/tmp"
-    chmod 0700 "$work" "$work/tmp" || die "could not chmod 0700 worker root $work"
-    base=$(basename "$script")
-    family=$(family_for_basename "$base")
-    expected=$(expected_gate_skip_for_family "$family")
-    printf 'FM_TEST_BEGIN %s %s family=%s expected_gate_skip=%s\n' \
-      "$(now_iso)" "$script" "$family" "$expected"
-    (
-      set +e
-      export TMPDIR="$work/tmp"
-      export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
-      cd "$ROOT" || exit 1
-      begin_ms=$(now_ms)
-      run_test_in_own_group "$RUN_TMP/groups/w$worker_n" "$script" >"$work/output" 2>&1
-      rc=$?
-      reap_test_group "$script" "$RUN_TMP/groups/w$worker_n" >>"$work/output" || rc=1
-      end_ms=$(now_ms)
-      duration=$((end_ms - begin_ms))
-      if [ "$duration" -lt 0 ]; then
-        duration=0
-      fi
-      printf '%s\n' "$duration" >"$work/duration_ms"
-      printf '%s\n' "$rc" >"$work/exit"
-      exit 0
-    ) &
-    WORKER_PIDS[worker_n]=$!
-    WORKER_IDX[worker_n]=$worker_n
-    WORKER_SCRIPTS[worker_n]=$script
-    active_workers=$((active_workers + 1))
+    start_job_worker "$script"
   done
+  # Every parallel worker is reaped here, before any serial-phase script starts.
   while [ "$active_workers" -gt 0 ]; do
     wait_one_completed_job_worker
+  done
+fi
+
+if [ "${#SERIAL_SCRIPTS[@]}" -gt 0 ]; then
+  if [ "$JOBS" -gt 1 ]; then
+    printf 'FM_TEST_PHASE serial scripts=%s\n' "${#SERIAL_SCRIPTS[@]}"
+  fi
+  for script in "${SERIAL_SCRIPTS[@]}"; do
+    run_one_serial "$script"
   done
 fi
 
