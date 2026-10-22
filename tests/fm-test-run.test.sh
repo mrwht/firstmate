@@ -564,7 +564,7 @@ test_portable_serial_shard_lane_refusals() {
   pass "portable serial shard lanes refuse mismatched, out-of-range, and countless names"
 }
 
-test_jobs_requires_proven_isolated() {
+test_jobs_refuses_portable_serial_lanes() {
   local tmp rc shard_lane
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
   set +e
@@ -572,13 +572,10 @@ test_jobs_requires_proven_isolated() {
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "--jobs with portable-serial must refuse (exit 2), got $rc"
-  grep -Fq 'not in the proven-isolated set' "$tmp/err" \
+  grep -Fq 'is a portable serial lane and stays strictly serial' "$tmp/err" \
     || fail "--jobs refusal message missing: $(cat "$tmp/err")"
-  set +e
-  "$RUNNER" --jobs 2 tests/fm-watcher-lock.test.sh >"$tmp/out2" 2>"$tmp/err2"
-  rc=$?
-  set -e
-  [ "$rc" -eq 2 ] || fail "--jobs on watcher-lock must refuse, got $rc"
+  ! grep -q '^FM_TEST_BEGIN ' "$tmp/out" \
+    || fail "--jobs portable-serial refusal must come before any script starts"
   # Sharding across runners never relaxes the serial rule inside one shard.
   shard_lane=$("$RUNNER" --list-lanes | grep -m1 '^portable-serial-[0-9]*of[0-9]*$')
   set +e
@@ -586,10 +583,10 @@ test_jobs_requires_proven_isolated() {
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "--jobs with a portable serial shard must refuse, got $rc"
-  grep -Fq 'not in the proven-isolated set' "$tmp/err3" \
+  grep -Fq 'is a portable serial lane and stays strictly serial' "$tmp/err3" \
     || fail "shard --jobs refusal message missing: $(cat "$tmp/err3")"
   rm -rf "$tmp"
-  pass "--jobs refuses non-proven / stateful selections"
+  pass "--jobs refuses portable serial lanes and their shards"
 }
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
@@ -672,19 +669,6 @@ assert doc["summary"]["failed"]==0
 assert "jobs=2" in doc["selection"]
 ' "$tmp/timing.json" || { rm -rf "$tmp"; fail "jobs JSON artifact wrong"; }
 
-  # Non-proven path is refused before any worker starts (no race masking).
-  cat >"$tmp/fail.test.sh" <<'SH'
-#!/usr/bin/env bash
-echo "not ok - deliberate fail"
-exit 1
-SH
-  chmod +x "$tmp/fail.test.sh"
-  set +e
-  "$runner" --jobs 2 "$a" "$tmp/fail.test.sh" >"$tmp/out3" 2>"$tmp/err3"
-  rc=$?
-  set -e
-  [ "$rc" -eq 2 ] || fail "jobs with non-proven fail fixture must refuse before run, got $rc"
-
   # Parallel failure propagation stays inside the private runner fixture.
   cat >"$repo/$b" <<'SH'
 #!/usr/bin/env bash
@@ -722,7 +706,172 @@ SH
     || { rm -rf "$tmp"; fail "parallel stderr skip summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out6")"; }
 
   rm -rf "$tmp"
-  pass "jobs scheduler runs proven scripts; failure propagates; non-proven refused"
+  pass "jobs scheduler runs proven scripts; failure propagates"
+}
+
+# Line number of the first stdout line matching an ERE, or 0 when absent.
+first_line_matching() {
+  grep -n -E -m1 "$2" "$1" | cut -d: -f1 || true
+}
+
+test_jobs_mixed_selection_runs_parallel_then_serial() {
+  local tmp repo runner evidence a b s rc par_ln ser_ln a_end b_end s_begin first_begin
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-mixed.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  evidence="$tmp/evidence"
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
+  s=tests/fm-watcher-lock.test.sh
+  mkdir -p "$repo/bin" "$repo/tests" "$evidence"
+  cp "$RUNNER" "$runner"
+  # The first proven fixture finishes only once the second has started, so it
+  # passes only when both run at the same time. The bounded deadline is there
+  # so a scheduler that serializes them still reports instead of hanging.
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+waited=0
+while [ ! -e "$MIXED_EVIDENCE/b-started" ] && [ "$waited" -lt 600 ]; do
+  sleep 0.05
+  waited=$((waited + 1))
+done
+if [ ! -e "$MIXED_EVIDENCE/b-started" ]; then
+  echo "not ok - proven fixtures did not run concurrently"
+  exit 1
+fi
+touch "$MIXED_EVIDENCE/a-done"
+echo "ok - proven fixture a"
+SH
+  cat >"$repo/$b" <<'SH'
+#!/usr/bin/env bash
+touch "$MIXED_EVIDENCE/b-started"
+touch "$MIXED_EVIDENCE/b-done"
+echo "ok - proven fixture b"
+SH
+  # The non-proven fixture is listed first but must run last, after both
+  # parallel workers finished.
+  cat >"$repo/$s" <<'SH'
+#!/usr/bin/env bash
+if [ ! -e "$MIXED_EVIDENCE/a-done" ] || [ ! -e "$MIXED_EVIDENCE/b-done" ]; then
+  echo "not ok - serial-phase script started before the parallel phase finished"
+  exit 1
+fi
+touch "$MIXED_EVIDENCE/s-done"
+echo "ok - serial fixture ran after the parallel phase"
+SH
+  chmod +x "$runner" "$repo/$a" "$repo/$b" "$repo/$s"
+  set +e
+  MIXED_EVIDENCE="$evidence" "$runner" --jobs 2 --json "$tmp/timing.json" \
+    "$s" "$a" "$b" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$tmp/out" "$tmp/err"; rm -rf "$tmp"; fail "mixed --jobs selection must run and pass, got $rc"; }
+  [ -e "$evidence/s-done" ] || { rm -rf "$tmp"; fail "serial-phase fixture never ran"; }
+  par_ln=$(first_line_matching "$tmp/out" '^FM_TEST_PHASE parallel jobs=2 scripts=2$')
+  ser_ln=$(first_line_matching "$tmp/out" '^FM_TEST_PHASE serial scripts=1$')
+  first_begin=$(first_line_matching "$tmp/out" '^FM_TEST_BEGIN ')
+  a_end=$(first_line_matching "$tmp/out" "^FM_TEST_END .+ $a exit=0 ")
+  b_end=$(first_line_matching "$tmp/out" "^FM_TEST_END .+ $b exit=0 ")
+  s_begin=$(first_line_matching "$tmp/out" "^FM_TEST_BEGIN .+ $s ")
+  { [ "${par_ln:-0}" -gt 0 ] && [ "${ser_ln:-0}" -gt 0 ]; } \
+    || { cat "$tmp/out"; rm -rf "$tmp"; fail "mixed run must print both FM_TEST_PHASE markers"; }
+  [ "$par_ln" -lt "$first_begin" ] \
+    || { cat "$tmp/out"; rm -rf "$tmp"; fail "parallel phase marker must precede the first script"; }
+  { [ "${a_end:-0}" -gt 0 ] && [ "${b_end:-0}" -gt 0 ] \
+    && [ "$a_end" -lt "$ser_ln" ] && [ "$b_end" -lt "$ser_ln" ] && [ "$ser_ln" -lt "${s_begin:-0}" ]; } \
+    || { cat "$tmp/out"; rm -rf "$tmp"; fail "serial phase must start only after every parallel worker ended"; }
+  grep -q 'FM_TEST_SUMMARY total=3 failed=0' "$tmp/out" \
+    || { rm -rf "$tmp"; fail "mixed summary wrong: $(grep FM_TEST_SUMMARY "$tmp/out")"; }
+  python3 -c '
+import json,sys
+doc=json.load(open(sys.argv[1]))
+assert doc["summary"]["total"]==3
+assert doc["selection"]=="scripts;jobs=2", doc["selection"]
+' "$tmp/timing.json" || { rm -rf "$tmp"; fail "mixed jobs JSON artifact wrong"; }
+
+  # A serial-only selection under --jobs still runs, with only the serial marker.
+  set +e
+  MIXED_EVIDENCE="$evidence" "$runner" --jobs 2 "$s" >"$tmp/out2" 2>"$tmp/err2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || { cat "$tmp/out2" "$tmp/err2"; rm -rf "$tmp"; fail "serial-only --jobs selection must run, got $rc"; }
+  grep -q '^FM_TEST_PHASE serial scripts=1$' "$tmp/out2" \
+    || { rm -rf "$tmp"; fail "serial-only --jobs run must print the serial phase marker"; }
+  ! grep -q '^FM_TEST_PHASE parallel ' "$tmp/out2" \
+    || { rm -rf "$tmp"; fail "an empty parallel phase must print no marker"; }
+  rm -rf "$tmp"
+  pass "mixed --jobs selection runs proven scripts concurrently, then the rest serially"
+}
+
+test_jobs_worker_isolation_tmux_and_xdg() {
+  local tmp repo runner evidence a rc tmux_root xdg_state worker_tmp probe_secs leftover waited
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-iso.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  evidence="$tmp/evidence"
+  a=tests/fm-tmux-submit-busy.test.sh
+  probe_secs="300.$$4"
+  mkdir -p "$repo/bin" "$repo/tests" "$evidence"
+  cp "$RUNNER" "$runner"
+  cat >"$repo/$a" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${TMUX_TMPDIR-}" >"$ISO_EVIDENCE/tmux_tmpdir"
+printf '%s\n' "${XDG_STATE_HOME-}" >"$ISO_EVIDENCE/xdg_state"
+printf '%s\n' "${TMPDIR-}" >"$ISO_EVIDENCE/tmpdir"
+printf '%s\n' "${TMUX-unset}" >"$ISO_EVIDENCE/tmux_env"
+printf '%s\n' "${HERDR_ENV-unset}" >"$ISO_EVIDENCE/herdr_env"
+printf '%s\n' "$HOME" >"$ISO_EVIDENCE/home"
+if command -v tmux >/dev/null 2>&1; then
+  tmux -L probe new-session -d -s probe "sleep $ISO_PROBE_SECS" \
+    || { echo "not ok - tmux probe server did not start"; exit 1; }
+  tmux -L probe has-session -t probe \
+    || { echo "not ok - tmux probe session missing"; exit 1; }
+  touch "$ISO_EVIDENCE/tmux_started"
+fi
+echo "ok - isolation probe"
+SH
+  chmod +x "$runner" "$repo/$a"
+  set +e
+  ISO_EVIDENCE="$evidence" ISO_PROBE_SECS="$probe_secs" \
+    TMUX=/nonexistent/fm-test-run-outer,1,0 TMUX_PANE=%999 HERDR_ENV=1 \
+    XDG_STATE_HOME="$tmp/outer-xdg-state" \
+    "$runner" --jobs 2 "$a" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  # Sample before the safety net, waiting on the condition with a generous
+  # ceiling because a killed server's pane processes exit asynchronously.
+  leftover=
+  if [ -e "$evidence/tmux_started" ]; then
+    waited=0
+    while leftover=$(pgrep -f "sleep $probe_secs" || true); [ -n "$leftover" ] && [ "$waited" -lt 200 ]; do
+      sleep 0.05
+      waited=$((waited + 1))
+    done
+    pkill -f "sleep $probe_secs" 2>/dev/null || true
+  fi
+  tmux_root=$(cat "$evidence/tmux_tmpdir" 2>/dev/null || true)
+  [ "$rc" -eq 0 ] || { cat "$tmp/out" "$tmp/err"; rm -rf "$tmp"; fail "isolation probe run must pass, got $rc"; }
+  case "$tmux_root" in
+    /tmp/fmx.*) ;;
+    *) rm -rf "$tmp"; fail "worker TMUX_TMPDIR must be a private /tmp/fmx.* root, got '$tmux_root'" ;;
+  esac
+  [ "${#tmux_root}" -lt 40 ] \
+    || { rm -rf "$tmp"; fail "worker TMUX_TMPDIR must stay short for AF_UNIX socket paths, got ${#tmux_root} bytes"; }
+  [ ! -e "$tmux_root" ] \
+    || { rm -rf "$tmp"; fail "worker TMUX_TMPDIR $tmux_root must be removed after the run"; }
+  [ -z "$leftover" ] \
+    || { rm -rf "$tmp"; fail "tmux server started under --jobs still running after the run: $leftover"; }
+  [ "$(cat "$evidence/tmux_env")" = unset ] || { rm -rf "$tmp"; fail "worker must unset TMUX"; }
+  [ "$(cat "$evidence/herdr_env")" = unset ] || { rm -rf "$tmp"; fail "worker must unset HERDR_ENV"; }
+  [ "$(cat "$evidence/home")" = "$HOME" ] || { rm -rf "$tmp"; fail "worker must not change HOME"; }
+  xdg_state=$(cat "$evidence/xdg_state")
+  worker_tmp=$(cat "$evidence/tmpdir")
+  [ -n "$xdg_state" ] && [ "$xdg_state" != "$tmp/outer-xdg-state" ] \
+    || { rm -rf "$tmp"; fail "worker XDG_STATE_HOME must be private, got '$xdg_state'"; }
+  [ "${xdg_state%/xdg/state}" = "${worker_tmp%/tmp}" ] \
+    || { rm -rf "$tmp"; fail "worker XDG_STATE_HOME $xdg_state must sit under the worker root of TMPDIR $worker_tmp"; }
+  rm -rf "$tmp"
+  pass "--jobs workers get a short private tmux root that is cleaned up, private XDG roots, and no ambient TMUX/HERDR session"
 }
 
 # Write a leaking fixture (background sleep, exit 0) and a tidy fixture (waits
@@ -866,8 +1015,10 @@ test_exclude_family
 test_portable_shard_union_and_coverage_guard
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
-test_jobs_requires_proven_isolated
+test_jobs_refuses_portable_serial_lanes
 test_jobs_parallel_scheduler_and_failure_propagation
+test_jobs_mixed_selection_runs_parallel_then_serial
+test_jobs_worker_isolation_tmux_and_xdg
 test_leaked_children_are_reported_reaped_and_failed
 test_jobs_leaked_children_are_reported_reaped_and_failed
 test_aggregate_json
