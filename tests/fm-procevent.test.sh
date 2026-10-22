@@ -408,13 +408,29 @@ assert_present "$HSELF/state/procevent-inbox/self-src.1.handled" "the self-annou
 if [ -e "$HSELF/state/.wake-queue" ] && grep -q 'procevent selfann self-src 1' "$HSELF/state/.wake-queue"; then
   fail "a fully autohandled self-announcing capture still published a duplicate check wake"
 fi
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/self-src.claim" "a returned start still holds its claim on a source that stays armed"
+# The source stays armed with no owner, so reconcile's liveness repair also
+# starts a detached runner for it. That runner owns the claim until it exits, so
+# wait for its generation to finish before the next explicit start; otherwise
+# that start races it and correctly reports "already owned".
 out=$(pe_adapter "$HSELF" reconcile)
 assert_contains "$out" "published=0" "reconcile re-announced a capture its adapter already acknowledged"
+assert_contains "$out" "started=1" "reconcile did not restart the armed self-announcing source"
+deadline=$((SECONDS + 60))
+until [ -e "$HSELF/state/procevent-inbox/self-src.2.handled" ] \
+  && [ ! -e "$FM_PROCEVENT_CLAIM_ROOT/self-src.claim" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || fail "the runner reconcile started never applied its capture and released its claim"
+  sleep 0.05
+done
+assert_grep 'self-src 2' "$HSELF/state/applied" "the reconcile-started self-announcing capture was not applied"
+if grep -q 'procevent selfann self-src 2' "$HSELF/state/.wake-queue" 2>/dev/null; then
+  fail "a reconcile-started self-announcing capture still published a duplicate check wake"
+fi
 : > "$HSELF/state/selfann-fail"
 out=$(pe_adapter "$HSELF" start self-src 2>&1)
 assert_contains "$out" "not-autohandled: self-src" "a failed self-announcing application was reported as applied"
-assert_absent "$HSELF/state/procevent-inbox/self-src.2.handled" "a failed self-announcing application was acknowledged anyway"
-assert_contains "$(wake_payloads "$HSELF")" "procevent selfann self-src 2" \
+assert_absent "$HSELF/state/procevent-inbox/self-src.3.handled" "a failed self-announcing application was acknowledged anyway"
+assert_contains "$(wake_payloads "$HSELF")" "procevent selfann self-src 3" \
   "a capture the self-announcing adapter could not apply lost its check-wake announcement"
 rm -f "$HSELF/state/selfann-fail"
 pass "a self-announcing adapter applies quietly and still publishes what it could not apply"
